@@ -33,6 +33,7 @@ import { isAutoActive, isAutoPaused, handleAgentEnd, pauseAuto, getAutoDashboard
 import { saveActivityLog } from "./activity-log.js";
 import { checkAutoStartAfterDiscuss } from "./guided-flow.js";
 import { GSDDashboardOverlay } from "./dashboard-overlay.js";
+import { registerLocalOpenAIProvider } from "./local-openai-provider.js";
 import {
   loadEffectiveGSDPreferences,
   renderPreferencesForSystemPrompt,
@@ -60,6 +61,7 @@ const GSD_LOGO_LINES = [
 ];
 
 export default function (pi: ExtensionAPI) {
+  registerLocalOpenAIProvider(pi);
   registerGSDCommand(pi);
   registerWorktreeCommand(pi);
 

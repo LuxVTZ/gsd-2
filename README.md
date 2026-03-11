@@ -154,6 +154,8 @@ gsd
 
 Select from 20+ providers — Anthropic, OpenAI, Google, OpenRouter, GitHub Copilot, and more. If you have a Claude Max or Copilot subscription, the OAuth flow handles everything. Otherwise, paste your API key when prompted.
 
+GSD also adds a `Local OpenAI-Compatible` provider to `/login` for self-hosted or proxy endpoints. Use it to save a custom base URL, API key, and model slug directly from the login flow.
+
 GSD auto-selects a default model after login. To switch models later:
 
 ```bash
@@ -393,6 +395,23 @@ If you have a **Claude Max**, **Codex**, or **GitHub Copilot** subscription, you
 ### OpenRouter
 
 [OpenRouter](https://openrouter.ai) gives you access to hundreds of models through a single API key. Use it to run GSD with Llama, DeepSeek, Qwen, or anything else OpenRouter supports.
+
+### Local OpenAI-Compatible
+
+For local gateways or proxies that speak the OpenAI Chat Completions API, run:
+
+```bash
+gsd
+/login local-openai
+```
+
+Then enter:
+
+- Base URL: `http://localhost:8317/v1`
+- API key: `sk-test`
+- Model: `gpt-5.4`
+
+After login, the provider appears in `/model` as `local-openai/gpt-5.4`.
 
 ### Per-Phase Model Selection
 
