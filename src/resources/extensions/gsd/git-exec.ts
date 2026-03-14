@@ -6,6 +6,9 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("git-exec");
 
 /** Env overlay that suppresses all interactive git credential prompts. */
 export const GIT_NO_PROMPT_ENV = {
@@ -40,6 +43,7 @@ export function gitExec(
   } catch (error) {
     if (opts.allowFailure) return "";
     const message = error instanceof Error ? error.message : String(error);
+    log.error("command failed", { cwd, args, message });
     throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${message}`);
   }
 }

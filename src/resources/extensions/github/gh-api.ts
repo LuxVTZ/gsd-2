@@ -7,6 +7,9 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("gh-api");
 
 // ─── Retry helper ─────────────────────────────────────────────────────────────
 
@@ -68,6 +71,7 @@ export async function ghFetchWithRetry(
 					if (resetDelay > 0 && resetDelay < MAX_DELAY_MS) delay = resetDelay;
 				}
 
+				log.warn("retrying", { url, status: res.status, attempt: attempt + 1, delayMs: Math.round(delay) });
 				await new Promise((r) => setTimeout(r, delay));
 				continue;
 			}
@@ -78,6 +82,7 @@ export async function ghFetchWithRetry(
 			if (attempt >= maxRetries) break;
 
 			const delay = Math.random() * Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt);
+			log.warn("network error, retrying", { url, attempt: attempt + 1, error: lastError.message });
 			await new Promise((r) => setTimeout(r, delay));
 		}
 	}
