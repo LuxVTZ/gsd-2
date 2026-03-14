@@ -8,6 +8,83 @@
 
 import { execFileSync } from "node:child_process";
 
+// ─── Retry helper ─────────────────────────────────────────────────────────────
+
+export interface RateLimitInfo {
+	remaining: number;
+	limit: number;
+	resetAt: Date;
+}
+
+function extractRateLimit(res: Response): RateLimitInfo | null {
+	const remaining = res.headers.get("x-ratelimit-remaining");
+	const limit = res.headers.get("x-ratelimit-limit");
+	const reset = res.headers.get("x-ratelimit-reset");
+	if (remaining == null || limit == null || reset == null) return null;
+	return { remaining: Number(remaining), limit: Number(limit), resetAt: new Date(Number(reset) * 1000) };
+}
+
+/**
+ * Fetch with full-jitter exponential backoff, retry on 429 / 5xx / network errors.
+ * Modelled on search-the-web/http.ts fetchWithRetry.
+ */
+export async function ghFetchWithRetry(
+	url: string,
+	init: RequestInit = {},
+	maxRetries = 2,
+): Promise<Response> {
+	const BASE_DELAY_MS = 1_000;
+	const MAX_DELAY_MS = 32_000;
+	const TIMEOUT_MS = 30_000;
+	let lastError: Error | null = null;
+
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		try {
+			const controller = new AbortController();
+			const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+			const merged: RequestInit = {
+				...init,
+				signal: controller.signal,
+			};
+
+			const res = await fetch(url, merged);
+			clearTimeout(timeoutId);
+
+			const rl = extractRateLimit(res);
+
+			if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
+				if (attempt >= maxRetries) return res; // caller handles the error
+
+				let delay: number;
+				const retryAfter = res.headers.get("retry-after");
+				if (retryAfter) {
+					delay = (Number(retryAfter) || 1) * 1000;
+				} else {
+					delay = Math.random() * Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt);
+				}
+
+				if (rl && rl.remaining === 0) {
+					const resetDelay = rl.resetAt.getTime() - Date.now();
+					if (resetDelay > 0 && resetDelay < MAX_DELAY_MS) delay = resetDelay;
+				}
+
+				await new Promise((r) => setTimeout(r, delay));
+				continue;
+			}
+
+			return res;
+		} catch (err) {
+			lastError = err instanceof Error ? err : new Error(String(err));
+			if (attempt >= maxRetries) break;
+
+			const delay = Math.random() * Math.min(MAX_DELAY_MS, BASE_DELAY_MS * 2 ** attempt);
+			await new Promise((r) => setTimeout(r, delay));
+		}
+	}
+
+	throw lastError ?? new Error(`GitHub API request failed after ${maxRetries + 1} attempts`);
+}
+
 // ─── Auth detection ───────────────────────────────────────────────────────────
 
 let _useGhCli: boolean | null = null;
@@ -196,11 +273,10 @@ async function fetchApi<T>(
 	};
 	if (token) headers.Authorization = `Bearer ${token}`;
 
-	const res = await fetch(url, {
+	const res = await ghFetchWithRetry(url, {
 		method,
 		headers,
 		body: method !== "GET" && body ? JSON.stringify(body) : undefined,
-		signal: AbortSignal.timeout(30_000),
 	});
 
 	if (!res.ok) {
@@ -437,7 +513,7 @@ export async function getPullRequestDiff(repo: RepoInfo, number: number): Promis
 	};
 	if (token) headers.Authorization = `Bearer ${token}`;
 
-	const res = await fetch(`https://api.github.com/repos/${repo.fullName}/pulls/${number}`, { headers, signal: AbortSignal.timeout(30_000) });
+	const res = await ghFetchWithRetry(`https://api.github.com/repos/${repo.fullName}/pulls/${number}`, { headers });
 	if (!res.ok) throw new Error(`GitHub API ${res.status}: ${await res.text()}`);
 	return res.text();
 }
