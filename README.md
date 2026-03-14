@@ -508,6 +508,21 @@ Use expensive models where quality matters (planning, complex execution) and che
 
 ---
 
+## Development
+
+Want to contribute or build from source? See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+```bash
+git clone https://github.com/gsd-build/gsd-2.git && cd gsd-2
+npm install && npm run build    # Build everything
+npm test                        # Run tests (377+)
+npm run dev                     # Watch mode
+npm run lint                    # ESLint check
+npm run format                  # Prettier check
+```
+
+---
+
 ## License
 
 [MIT License](LICENSE)
