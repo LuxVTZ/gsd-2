@@ -11,6 +11,7 @@
  */
 
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
+import { isMcpError } from "../shared/types.js";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -261,7 +262,7 @@ export default function (pi: ExtensionAPI) {
 			const d = result.details as SearchDetails | undefined;
 
 			if (isPartial) return new Text(theme.fg("warning", "Searching Google..."), 0, 0);
-			if ((result as any).isError || d?.error) {
+			if (isMcpError(result) || d?.error) {
 				return new Text(theme.fg("error", `Error: ${d?.error ?? "unknown"}`), 0, 0);
 			}
 

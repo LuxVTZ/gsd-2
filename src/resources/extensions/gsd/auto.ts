@@ -77,6 +77,7 @@ import type { GitPreferences } from "./git-service.js";
 import { truncateToWidth, visibleWidth } from "@gsd/pi-tui";
 import { makeUI, GLYPH, INDENT } from "../shared/ui.js";
 import { showNextAction } from "../shared/next-action-ui.js";
+import { getRoadmapSlicesSync, updateSliceProgressCache } from "./auto-roadmap.js";
 
 // ─── Disk-backed completed-unit helpers ───────────────────────────────────────
 
@@ -1202,53 +1203,7 @@ function formatAutoElapsed(): string {
   return `${h}h ${rm}m`;
 }
 
-/** Cached slice progress for the widget — avoid async in render */
-let cachedSliceProgress: {
-  done: number;
-  total: number;
-  milestoneId: string;
-  /** Real task progress for the active slice, if its plan file exists */
-  activeSliceTasks: { done: number; total: number } | null;
-} | null = null;
-
-function updateSliceProgressCache(base: string, mid: string, activeSid?: string): void {
-  try {
-    const roadmapFile = resolveMilestoneFile(base, mid, "ROADMAP");
-    if (!roadmapFile) return;
-    const content = readFileSync(roadmapFile, "utf-8");
-    const roadmap = parseRoadmap(content);
-
-    let activeSliceTasks: { done: number; total: number } | null = null;
-    if (activeSid) {
-      try {
-        const planFile = resolveSliceFile(base, mid, activeSid, "PLAN");
-        if (planFile && existsSync(planFile)) {
-          const planContent = readFileSync(planFile, "utf-8");
-          const plan = parsePlan(planContent);
-          activeSliceTasks = {
-            done: plan.tasks.filter(t => t.done).length,
-            total: plan.tasks.length,
-          };
-        }
-      } catch {
-        // Non-fatal — just omit task count
-      }
-    }
-
-    cachedSliceProgress = {
-      done: roadmap.slices.filter(s => s.done).length,
-      total: roadmap.slices.length,
-      milestoneId: mid,
-      activeSliceTasks,
-    };
-  } catch {
-    // Non-fatal — widget just won't show progress bar
-  }
-}
-
-function getRoadmapSlicesSync(): { done: number; total: number; activeSliceTasks: { done: number; total: number } | null } | null {
-  return cachedSliceProgress;
-}
+// Roadmap slice progress — extracted to auto-roadmap.ts
 
 // ─── Core Loop ────────────────────────────────────────────────────────────────
 

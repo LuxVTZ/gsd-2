@@ -124,17 +124,17 @@ export default function (pi: ExtensionAPI) {
       toolCallId: string,
       params: { command: string; timeout?: number },
       signal?: AbortSignal,
-      onUpdate?: any,
-      ctx?: any,
+      onUpdate?: (data: unknown) => void,
+      ctx?: unknown,
     ) => {
       const paramsWithTimeout = {
         ...params,
         timeout: params.timeout ?? DEFAULT_BASH_TIMEOUT_SECS,
       };
-      return (baseBash as any).execute(toolCallId, paramsWithTimeout, signal, onUpdate, ctx);
+      return baseBash.execute(toolCallId, paramsWithTimeout, signal, onUpdate, ctx);
     },
   };
-  pi.registerTool(dynamicBash as any);
+  pi.registerTool(dynamicBash as Parameters<typeof pi.registerTool>[0]);
 
   // ── Dynamic-cwd file tools (write, read, edit) ────────────────────────
   // The built-in file tools capture cwd at startup. When process.chdir()
@@ -148,14 +148,14 @@ export default function (pi: ExtensionAPI) {
       toolCallId: string,
       params: { path: string; content: string },
       signal?: AbortSignal,
-      onUpdate?: any,
-      ctx?: any,
+      onUpdate?: (data: unknown) => void,
+      ctx?: unknown,
     ) => {
       const fresh = createWriteTool(process.cwd());
-      return (fresh as any).execute(toolCallId, params, signal, onUpdate, ctx);
+      return fresh.execute(toolCallId, params, signal, onUpdate, ctx);
     },
   };
-  pi.registerTool(dynamicWrite as any);
+  pi.registerTool(dynamicWrite as Parameters<typeof pi.registerTool>[0]);
 
   const baseRead = createReadTool(process.cwd());
   const dynamicRead = {
@@ -164,14 +164,14 @@ export default function (pi: ExtensionAPI) {
       toolCallId: string,
       params: { path: string; offset?: number; limit?: number },
       signal?: AbortSignal,
-      onUpdate?: any,
-      ctx?: any,
+      onUpdate?: (data: unknown) => void,
+      ctx?: unknown,
     ) => {
       const fresh = createReadTool(process.cwd());
-      return (fresh as any).execute(toolCallId, params, signal, onUpdate, ctx);
+      return fresh.execute(toolCallId, params, signal, onUpdate, ctx);
     },
   };
-  pi.registerTool(dynamicRead as any);
+  pi.registerTool(dynamicRead as Parameters<typeof pi.registerTool>[0]);
 
   const baseEdit = createEditTool(process.cwd());
   const dynamicEdit = {
@@ -180,14 +180,14 @@ export default function (pi: ExtensionAPI) {
       toolCallId: string,
       params: { path: string; oldText: string; newText: string },
       signal?: AbortSignal,
-      onUpdate?: any,
-      ctx?: any,
+      onUpdate?: (data: unknown) => void,
+      ctx?: unknown,
     ) => {
       const fresh = createEditTool(process.cwd());
-      return (fresh as any).execute(toolCallId, params, signal, onUpdate, ctx);
+      return fresh.execute(toolCallId, params, signal, onUpdate, ctx);
     },
   };
-  pi.registerTool(dynamicEdit as any);
+  pi.registerTool(dynamicEdit as Parameters<typeof pi.registerTool>[0]);
 
   // ── session_start: render branded GSD header + remote channel status ──
   pi.on("session_start", async (_event, ctx) => {

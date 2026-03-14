@@ -26,6 +26,8 @@
 import { StringEnum } from "@gsd/pi-ai";
 
 import { safeRegExp } from "./safe-regexp.ts";
+import { isMcpError } from "../shared/types.js";
+import type { SessionEntryWithMessage } from "../shared/types.js";
 import {
 	formatUptime,
 	detectProcessType as _detectProcessType,
@@ -1895,7 +1897,7 @@ export default function (pi: ExtensionAPI) {
 
 			const action = details.action as string;
 
-			if ((result as any).isError) {
+			if (isMcpError(result)) {
 				const text = result.content[0];
 				return new Text(
 					theme.fg("error", text?.type === "text" ? text.text : "Error"),
@@ -2412,8 +2414,9 @@ export default function (pi: ExtensionAPI) {
 					let totalCacheRead = 0, totalCacheWrite = 0, totalCost = 0;
 					if (sm) {
 						for (const entry of sm.getEntries()) {
-							if (entry.type === "message" && (entry as any).message?.role === "assistant") {
-								const u = (entry as any).message.usage;
+							const e = entry as SessionEntryWithMessage;
+							if (e.type === "message" && e.message?.role === "assistant") {
+								const u = e.message.usage;
 								if (u) {
 									totalInput += u.input || 0;
 									totalOutput += u.output || 0;
@@ -2460,7 +2463,9 @@ export default function (pi: ExtensionAPI) {
 					const modelName = ctx?.model?.id || "no-model";
 					let rightSide = modelName;
 					if (ctx?.model?.reasoning) {
-						const thinkingLevel = (ctx as any).getThinkingLevel?.() || "off";
+						const thinkingLevel = (ctx as Record<string, unknown>).getThinkingLevel
+							? ((ctx as Record<string, (() => string) | undefined>).getThinkingLevel!() || "off")
+							: "off";
 						rightSide = thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${thinkingLevel}`;
 					}
 					if (footerData.getAvailableProviderCount() > 1 && ctx?.model) {
@@ -2530,10 +2535,10 @@ export default function (pi: ExtensionAPI) {
 		latestCtx = ctx;
 		refreshWidget();
 	};
-	pi.on("turn_end", refreshHandler as any);
-	pi.on("agent_end", refreshHandler as any);
-	pi.on("session_start", refreshHandler as any);
-	pi.on("session_switch", refreshHandler as any);
+	pi.on("turn_end", refreshHandler as (...args: unknown[]) => void);
+	pi.on("agent_end", refreshHandler as (...args: unknown[]) => void);
+	pi.on("session_start", refreshHandler as (...args: unknown[]) => void);
+	pi.on("session_switch", refreshHandler as (...args: unknown[]) => void);
 
 	pi.on("tool_execution_end", async (_event, ctx) => {
 		latestCtx = ctx;
