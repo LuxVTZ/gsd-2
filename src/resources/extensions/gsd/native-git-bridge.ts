@@ -1,11 +1,11 @@
 // Native Git Bridge
 // Provides fast READ-ONLY git operations backed by libgit2 via the Rust native module.
-// Falls back to execSync git commands when the native module is unavailable.
+// Falls back to execFileSync git commands when the native module is unavailable.
 //
 // Only READ operations are native — WRITE operations (commit, merge, checkout, push)
-// remain as execSync calls in git-service.ts.
+// remain as execFileSync calls in git-service.ts.
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 /** Env overlay that suppresses all interactive git credential prompts. */
 const GIT_NO_PROMPT_ENV = {
@@ -43,10 +43,10 @@ function loadNative(): typeof nativeModule {
   return nativeModule;
 }
 
-/** Run a git command via execSync. Returns trimmed stdout. */
+/** Run a git command via execFileSync. Returns trimmed stdout. */
 function gitExec(basePath: string, args: string[], allowFailure = false): string {
   try {
-    return execSync(`git ${args.join(" ")}`, {
+    return execFileSync("git", args, {
       cwd: basePath,
       stdio: ["ignore", "pipe", "pipe"],
       encoding: "utf-8",

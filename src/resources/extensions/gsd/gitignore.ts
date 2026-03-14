@@ -8,7 +8,7 @@
 
 import { join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 /**
  * Patterns that are always correct regardless of project type.
@@ -123,7 +123,7 @@ export function untrackRuntimeFiles(basePath: string): void {
     // Use -r for directory patterns (trailing slash), strip the slash for the command
     const target = pattern.endsWith("/") ? pattern.slice(0, -1) : pattern;
     try {
-      execSync(`git rm -r --cached ${target}`, {
+      execFileSync("git", ["rm", "-r", "--cached", target], {
         cwd: basePath,
         stdio: ["ignore", "ignore", "ignore"],
       });

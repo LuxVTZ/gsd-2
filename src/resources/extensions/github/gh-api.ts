@@ -6,7 +6,7 @@
  * Falls back to raw REST API with GITHUB_TOKEN env var.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 // ─── Auth detection ───────────────────────────────────────────────────────────
 
@@ -15,7 +15,7 @@ let _useGhCli: boolean | null = null;
 function hasGhCli(): boolean {
 	if (_useGhCli !== null) return _useGhCli;
 	try {
-		execSync("gh auth status", { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
+		execFileSync("gh", ["auth", "status"], { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
 		_useGhCli = true;
 	} catch {
 		_useGhCli = false;
@@ -47,7 +47,7 @@ export interface RepoInfo {
 
 export function detectRepo(cwd: string): RepoInfo | null {
 	try {
-		const remote = execSync("git remote get-url origin", {
+		const remote = execFileSync("git", ["remote", "get-url", "origin"], {
 			cwd,
 			encoding: "utf8",
 			stdio: ["pipe", "pipe", "pipe"],
@@ -68,7 +68,7 @@ export function detectRepo(cwd: string): RepoInfo | null {
 
 export function getCurrentBranch(cwd: string): string | null {
 	try {
-		return execSync("git rev-parse --abbrev-ref HEAD", {
+		return execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
 			cwd,
 			encoding: "utf8",
 			stdio: ["pipe", "pipe", "pipe"],
@@ -80,11 +80,16 @@ export function getCurrentBranch(cwd: string): string | null {
 
 export function getDefaultBranch(cwd: string): string {
 	try {
-		const result = execSync("git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo refs/remotes/origin/main", {
-			cwd,
-			encoding: "utf8",
-			stdio: ["pipe", "pipe", "pipe"],
-		}).trim();
+		let result: string;
+		try {
+			result = execFileSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], {
+				cwd,
+				encoding: "utf8",
+				stdio: ["pipe", "pipe", "pipe"],
+			}).trim();
+		} catch {
+			result = "refs/remotes/origin/main";
+		}
 		return result.replace("refs/remotes/origin/", "");
 	} catch {
 		return "main";
@@ -120,11 +125,6 @@ export async function ghApi<T = unknown>(
 	return fetchApi<T>(endpoint, method, options.params, options.body, token);
 }
 
-function shellEscape(s: string): string {
-	// Single-quote wrapping, escaping any existing single quotes
-	return "'" + s.replace(/'/g, "'\\''") + "'";
-}
-
 function ghCliApi<T>(
 	endpoint: string,
 	method: string,
@@ -132,17 +132,17 @@ function ghCliApi<T>(
 	body?: Record<string, unknown>,
 	cwd?: string,
 ): T {
-	const parts = ["gh", "api", shellEscape(endpoint), "--method", method];
+	const parts = ["gh", "api", endpoint, "--method", method];
 
 	if (params) {
 		for (const [key, val] of Object.entries(params)) {
 			if (val === undefined) continue;
 			if (Array.isArray(val)) {
 				for (const v of val) {
-					parts.push("-f", shellEscape(`${key}[]=${v}`));
+					parts.push("-f", `${key}[]=${v}`);
 				}
 			} else {
-				parts.push("-f", shellEscape(`${key}=${String(val)}`));
+				parts.push("-f", `${key}=${String(val)}`);
 			}
 		}
 	}
@@ -152,7 +152,7 @@ function ghCliApi<T>(
 	}
 
 	try {
-		const result = execSync(parts.join(" "), {
+		const result = execFileSync(parts[0], parts.slice(1), {
 			cwd: cwd ?? process.cwd(),
 			encoding: "utf8",
 			stdio: ["pipe", "pipe", "pipe"],
@@ -419,7 +419,7 @@ export async function updatePullRequest(
 export async function getPullRequestDiff(repo: RepoInfo, number: number): Promise<string> {
 	if (hasGhCli()) {
 		try {
-			return execSync(`gh pr diff ${number} --repo ${repo.fullName}`, {
+			return execFileSync("gh", ["pr", "diff", String(number), "--repo", repo.fullName], {
 				encoding: "utf8",
 				stdio: ["pipe", "pipe", "pipe"],
 			}).trim();

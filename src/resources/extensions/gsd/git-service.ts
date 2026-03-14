@@ -8,7 +8,7 @@
  * paths, commit type inference, and the runGit shell helper.
  */
 
-import { execSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 
@@ -219,7 +219,7 @@ const GIT_NO_PROMPT_ENV = {
  */
 export function runGit(basePath: string, args: string[], options: { allowFailure?: boolean; input?: string } = {}): string {
   try {
-    return execSync(`git ${args.join(" ")}`, {
+    return execFileSync("git", args, {
       cwd: basePath,
       stdio: [options.input != null ? "pipe" : "ignore", "pipe", "pipe"],
       encoding: "utf-8",
