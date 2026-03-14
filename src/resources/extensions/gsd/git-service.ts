@@ -8,7 +8,7 @@
  * paths, commit type inference, and the runGit shell helper.
  */
 
-import { execFileSync, execSync } from "node:child_process";
+import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 
@@ -25,6 +25,7 @@ import {
   nativeHasChanges,
   nativeCommitCountBetween,
 } from "./native-git-bridge.js";
+import { gitExec, GIT_NO_PROMPT_ENV } from "./git-exec.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -205,32 +206,13 @@ export function writeIntegrationBranch(basePath: string, milestoneId: string, br
 
 // ─── Git Helper ────────────────────────────────────────────────────────────
 
-/** Env overlay that suppresses all interactive git credential prompts. */
-const GIT_NO_PROMPT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_ASKPASS: "",
-};
-
 /**
  * Run a git command in the given directory.
  * Returns trimmed stdout. Throws on non-zero exit unless allowFailure is set.
  * When `input` is provided, it is piped to stdin.
  */
 export function runGit(basePath: string, args: string[], options: { allowFailure?: boolean; input?: string } = {}): string {
-  try {
-    return execFileSync("git", args, {
-      cwd: basePath,
-      stdio: [options.input != null ? "pipe" : "ignore", "pipe", "pipe"],
-      encoding: "utf-8",
-      env: GIT_NO_PROMPT_ENV,
-      ...(options.input != null ? { input: options.input } : {}),
-    }).trim();
-  } catch (error) {
-    if (options.allowFailure) return "";
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`git ${args.join(" ")} failed in ${basePath}: ${message}`);
-  }
+  return gitExec(basePath, args, options);
 }
 
 // ─── Commit Type Inference ─────────────────────────────────────────────────

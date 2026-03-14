@@ -5,14 +5,7 @@
 // Only READ operations are native — WRITE operations (commit, merge, checkout, push)
 // remain as execFileSync calls in git-service.ts.
 
-import { execFileSync } from "node:child_process";
-
-/** Env overlay that suppresses all interactive git credential prompts. */
-const GIT_NO_PROMPT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_ASKPASS: "",
-};
+import { gitExec } from "./git-exec.js";
 
 let nativeModule: {
   gitCurrentBranch: (repoPath: string) => string | null;
@@ -41,21 +34,6 @@ function loadNative(): typeof nativeModule {
   }
 
   return nativeModule;
-}
-
-/** Run a git command via execFileSync. Returns trimmed stdout. */
-function gitExec(basePath: string, args: string[], allowFailure = false): string {
-  try {
-    return execFileSync("git", args, {
-      cwd: basePath,
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf-8",
-      env: GIT_NO_PROMPT_ENV,
-    }).trim();
-  } catch {
-    if (allowFailure) return "";
-    throw new Error(`git ${args.join(" ")} failed in ${basePath}`);
-  }
 }
 
 /**
@@ -88,16 +66,16 @@ export function nativeDetectMainBranch(basePath: string): string {
   }
 
   // Fallback: same logic as GitServiceImpl.getMainBranch() repo-level detection
-  const symbolic = gitExec(basePath, ["symbolic-ref", "refs/remotes/origin/HEAD"], true);
+  const symbolic = gitExec(basePath, ["symbolic-ref", "refs/remotes/origin/HEAD"], { allowFailure: true });
   if (symbolic) {
     const match = symbolic.match(/refs\/remotes\/origin\/(.+)$/);
     if (match) return match[1]!;
   }
 
-  const mainExists = gitExec(basePath, ["show-ref", "--verify", "refs/heads/main"], true);
+  const mainExists = gitExec(basePath, ["show-ref", "--verify", "refs/heads/main"], { allowFailure: true });
   if (mainExists) return "main";
 
-  const masterExists = gitExec(basePath, ["show-ref", "--verify", "refs/heads/master"], true);
+  const masterExists = gitExec(basePath, ["show-ref", "--verify", "refs/heads/master"], { allowFailure: true });
   if (masterExists) return "master";
 
   return gitExec(basePath, ["branch", "--show-current"]);
@@ -113,7 +91,7 @@ export function nativeBranchExists(basePath: string, branch: string): boolean {
   if (native) {
     return native.gitBranchExists(basePath, branch);
   }
-  const result = gitExec(basePath, ["show-ref", "--verify", `refs/heads/${branch}`], true);
+  const result = gitExec(basePath, ["show-ref", "--verify", `refs/heads/${branch}`], { allowFailure: true });
   return result !== "";
 }
 
@@ -127,7 +105,7 @@ export function nativeHasMergeConflicts(basePath: string): boolean {
   if (native) {
     return native.gitHasMergeConflicts(basePath);
   }
-  const result = gitExec(basePath, ["diff", "--name-only", "--diff-filter=U"], true);
+  const result = gitExec(basePath, ["diff", "--name-only", "--diff-filter=U"], { allowFailure: true });
   return result !== "";
 }
 
@@ -141,7 +119,7 @@ export function nativeWorkingTreeStatus(basePath: string): string {
   if (native) {
     return native.gitWorkingTreeStatus(basePath);
   }
-  return gitExec(basePath, ["status", "--porcelain"], true);
+  return gitExec(basePath, ["status", "--porcelain"], { allowFailure: true });
 }
 
 /**
@@ -154,7 +132,7 @@ export function nativeHasChanges(basePath: string): boolean {
   if (native) {
     return native.gitHasChanges(basePath);
   }
-  const result = gitExec(basePath, ["status", "--short"], true);
+  const result = gitExec(basePath, ["status", "--short"], { allowFailure: true });
   return result !== "";
 }
 
@@ -168,7 +146,7 @@ export function nativeCommitCountBetween(basePath: string, fromRef: string, toRe
   if (native) {
     return native.gitCommitCountBetween(basePath, fromRef, toRef);
   }
-  const result = gitExec(basePath, ["rev-list", "--count", `${fromRef}..${toRef}`], true);
+  const result = gitExec(basePath, ["rev-list", "--count", `${fromRef}..${toRef}`], { allowFailure: true });
   return parseInt(result, 10) || 0;
 }
 

@@ -65,31 +65,37 @@ function getIsolationBaseDir(cwd: string, taskId: string): string {
 const activeIsolations = new Set<string>();
 let exitHandlerRegistered = false;
 
+const exitCleanup = () => {
+	for (const dir of activeIsolations) {
+		try {
+			// Best-effort sync cleanup: remove git worktree
+			const { execFileSync } = require("node:child_process");
+			try {
+				execFileSync("git", ["worktree", "remove", "--force", dir], {
+					stdio: "ignore",
+					timeout: 5000,
+				});
+			} catch {
+				// Worktree may not exist (FUSE mode), just rm
+			}
+			fs.rmSync(dir, { recursive: true, force: true });
+		} catch {
+			// Best effort
+		}
+	}
+};
+
 function registerExitHandler(): void {
 	if (exitHandlerRegistered) return;
 	exitHandlerRegistered = true;
+	process.on("exit", exitCleanup);
+}
 
-	const cleanup = () => {
-		for (const dir of activeIsolations) {
-			try {
-				// Best-effort sync cleanup: remove git worktree
-				const { execFileSync } = require("node:child_process");
-				try {
-					execFileSync("git", ["worktree", "remove", "--force", dir], {
-						stdio: "ignore",
-						timeout: 5000,
-					});
-				} catch {
-					// Worktree may not exist (FUSE mode), just rm
-				}
-				fs.rmSync(dir, { recursive: true, force: true });
-			} catch {
-				// Best effort
-			}
-		}
-	};
-
-	process.on("exit", cleanup);
+function unregisterExitHandlerIfIdle(): void {
+	if (activeIsolations.size === 0 && exitHandlerRegistered) {
+		process.off("exit", exitCleanup);
+		exitHandlerRegistered = false;
+	}
 }
 
 // ============================================================================
@@ -281,6 +287,7 @@ export async function createWorktreeIsolation(
 				// Force remove directory if git worktree remove fails
 				fs.rmSync(worktreeDir, { recursive: true, force: true });
 			}
+			unregisterExitHandlerIfIdle();
 		},
 	};
 }
@@ -399,6 +406,7 @@ export async function createFuseOverlayIsolation(
 			}
 			// Remove all dirs
 			fs.rmSync(baseDir, { recursive: true, force: true });
+			unregisterExitHandlerIfIdle();
 		},
 	};
 }

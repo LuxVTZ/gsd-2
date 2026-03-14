@@ -16,8 +16,9 @@
  */
 
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
+
+import { gitExec } from "./git-exec.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -46,26 +47,8 @@ export interface WorktreeDiffSummary {
 
 // ─── Git Helpers ───────────────────────────────────────────────────────────
 
-/** Env overlay that suppresses all interactive git credential prompts. */
-const GIT_NO_PROMPT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_ASKPASS: "",
-};
-
 function runGit(cwd: string, args: string[], opts: { allowFailure?: boolean } = {}): string {
-  try {
-    return execFileSync("git", args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf-8",
-      env: GIT_NO_PROMPT_ENV,
-    }).trim();
-  } catch (error) {
-    if (opts.allowFailure) return "";
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${message}`);
-  }
+  return gitExec(cwd, args, opts);
 }
 
 function normalizePathForComparison(path: string): string {
