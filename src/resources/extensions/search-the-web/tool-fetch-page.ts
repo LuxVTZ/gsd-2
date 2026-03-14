@@ -296,6 +296,7 @@ interface FetchPageDetails {
 // =============================================================================
 
 export function registerFetchPageTool(pi: ExtensionAPI) {
+  const piExt = pi as ExtensionAPI & { writeTempFile(content: string, opts?: { prefix?: string }): Promise<string> };
   pi.registerTool({
     name: "fetch_page",
     label: "Fetch Page",
@@ -439,7 +440,7 @@ export function registerFetchPageTool(pi: ExtensionAPI) {
       const finalTruncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
       let content = finalTruncation.content;
       if (finalTruncation.truncated) {
-        const tempFile = await (pi as any).writeTempFile(output, { prefix: "fetch-page-" });
+        const tempFile = await piExt.writeTempFile(output, { prefix: "fetch-page-" });
         content += `\n\n[Truncated to fit context. Full content: ${tempFile}]`;
       }
 

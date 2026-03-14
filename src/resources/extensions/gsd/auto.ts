@@ -1427,7 +1427,8 @@ async function dispatchNextUnit(
                 lastProgressKind: "dispatch",
               });
               updateProgressWidget(ctx, fixMergeUnitType, fixMergeUnitId, state);
-              const result = await cmdCtx!.newSession();
+              if (!cmdCtx) throw new Error("[gsd/auto] cmdCtx is null in fix-merge recovery");
+              const result = await cmdCtx.newSession();
               if (result.cancelled) {
                 runGit(basePath, ["reset", "--hard", "HEAD"], { allowFailure: true });
                 await stopAuto(ctx, pi);
@@ -1572,8 +1573,9 @@ async function dispatchNextUnit(
   // If the current phase is "summarizing", complete-slice is responsible for
   // mergeSliceToMain. Reassessment must wait until the merge is done.
   if (state.phase === "summarizing") {
-    const sid = state.activeSlice!.id;
-    const sTitle = state.activeSlice!.title;
+    if (!state.activeSlice) throw new Error("[gsd/auto] activeSlice is null in summarizing phase");
+    const sid = state.activeSlice.id;
+    const sTitle = state.activeSlice.title;
     unitType = "complete-slice";
     unitId = `${mid}/${sid}`;
     prompt = await buildCompleteSlicePrompt(mid, midTitle!, sid, sTitle, basePath);
@@ -1640,8 +1642,9 @@ async function dispatchNextUnit(
 
     } else if (state.phase === "planning") {
       // Slice needs planning — but research first if no research exists
-      const sid = state.activeSlice!.id;
-      const sTitle = state.activeSlice!.title;
+      if (!state.activeSlice) throw new Error("[gsd/auto] activeSlice is null in planning phase");
+      const sid = state.activeSlice.id;
+      const sTitle = state.activeSlice.title;
       const researchFile = resolveSliceFile(basePath, mid, sid, "RESEARCH");
       const hasResearch = !!researchFile;
 
@@ -1667,16 +1670,18 @@ async function dispatchNextUnit(
 
     } else if (state.phase === "replanning-slice") {
       // Blocker discovered — replan the slice before continuing
-      const sid = state.activeSlice!.id;
-      const sTitle = state.activeSlice!.title;
+      if (!state.activeSlice) throw new Error("[gsd/auto] activeSlice is null in replanning-slice phase");
+      const sid = state.activeSlice.id;
+      const sTitle = state.activeSlice.title;
       unitType = "replan-slice";
       unitId = `${mid}/${sid}`;
       prompt = await buildReplanSlicePrompt(mid, midTitle!, sid, sTitle, basePath);
 
     } else if (state.phase === "executing" && state.activeTask) {
       // Execute next task
-      const sid = state.activeSlice!.id;
-      const sTitle = state.activeSlice!.title;
+      if (!state.activeSlice) throw new Error("[gsd/auto] activeSlice is null in executing phase");
+      const sid = state.activeSlice.id;
+      const sTitle = state.activeSlice.title;
       const tid = state.activeTask.id;
       const tTitle = state.activeTask.title;
       unitType = "execute-task";
@@ -1886,7 +1891,8 @@ async function dispatchNextUnit(
   ensurePreconditions(unitType, unitId, basePath, state);
 
   // Fresh session
-  const result = await cmdCtx!.newSession();
+  if (!cmdCtx) throw new Error("[gsd/auto] cmdCtx is null at dispatch");
+  const result = await cmdCtx.newSession();
   if (result.cancelled) {
     await stopAuto(ctx, pi);
     ctx.ui.notify("New session cancelled — auto-mode stopped.", "warning");
@@ -3317,29 +3323,35 @@ export function resolveExpectedArtifactPath(unitType: string, unitId: string, ba
       return dir ? join(dir, buildMilestoneFileName(mid, "ROADMAP")) : null;
     }
     case "research-slice": {
-      const dir = resolveSlicePath(base, mid, sid!);
-      return dir ? join(dir, buildSliceFileName(sid!, "RESEARCH")) : null;
+      if (!sid) return null;
+      const dir = resolveSlicePath(base, mid, sid);
+      return dir ? join(dir, buildSliceFileName(sid, "RESEARCH")) : null;
     }
     case "plan-slice": {
-      const dir = resolveSlicePath(base, mid, sid!);
-      return dir ? join(dir, buildSliceFileName(sid!, "PLAN")) : null;
+      if (!sid) return null;
+      const dir = resolveSlicePath(base, mid, sid);
+      return dir ? join(dir, buildSliceFileName(sid, "PLAN")) : null;
     }
     case "reassess-roadmap": {
-      const dir = resolveSlicePath(base, mid, sid!);
-      return dir ? join(dir, buildSliceFileName(sid!, "ASSESSMENT")) : null;
+      if (!sid) return null;
+      const dir = resolveSlicePath(base, mid, sid);
+      return dir ? join(dir, buildSliceFileName(sid, "ASSESSMENT")) : null;
     }
     case "run-uat": {
-      const dir = resolveSlicePath(base, mid, sid!);
-      return dir ? join(dir, buildSliceFileName(sid!, "UAT-RESULT")) : null;
+      if (!sid) return null;
+      const dir = resolveSlicePath(base, mid, sid);
+      return dir ? join(dir, buildSliceFileName(sid, "UAT-RESULT")) : null;
     }
     case "execute-task": {
+      if (!sid) return null;
       const tid = parts[2];
-      const dir = resolveSlicePath(base, mid, sid!);
+      const dir = resolveSlicePath(base, mid, sid);
       return dir && tid ? join(dir, "tasks", buildTaskFileName(tid, "SUMMARY")) : null;
     }
     case "complete-slice": {
-      const dir = resolveSlicePath(base, mid, sid!);
-      return dir ? join(dir, buildSliceFileName(sid!, "SUMMARY")) : null;
+      if (!sid) return null;
+      const dir = resolveSlicePath(base, mid, sid);
+      return dir ? join(dir, buildSliceFileName(sid, "SUMMARY")) : null;
     }
     case "complete-milestone": {
       const dir = resolveMilestonePath(base, mid);
@@ -3454,29 +3466,37 @@ function diagnoseExpectedArtifact(unitType: string, unitId: string, base: string
   const parts = unitId.split("/");
   const mid = parts[0];
   const sid = parts[1];
+  if (!mid) return null;
   switch (unitType) {
     case "research-milestone":
-      return `${relMilestoneFile(base, mid!, "RESEARCH")} (milestone research)`;
+      return `${relMilestoneFile(base, mid, "RESEARCH")} (milestone research)`;
     case "plan-milestone":
-      return `${relMilestoneFile(base, mid!, "ROADMAP")} (milestone roadmap)`;
+      return `${relMilestoneFile(base, mid, "ROADMAP")} (milestone roadmap)`;
     case "research-slice":
-      return `${relSliceFile(base, mid!, sid!, "RESEARCH")} (slice research)`;
+      if (!sid) return null;
+      return `${relSliceFile(base, mid, sid, "RESEARCH")} (slice research)`;
     case "plan-slice":
-      return `${relSliceFile(base, mid!, sid!, "PLAN")} (slice plan)`;
+      if (!sid) return null;
+      return `${relSliceFile(base, mid, sid, "PLAN")} (slice plan)`;
     case "execute-task": {
+      if (!sid) return null;
       const tid = parts[2];
-      return `Task ${tid} marked [x] in ${relSliceFile(base, mid!, sid!, "PLAN")} + summary written`;
+      return `Task ${tid} marked [x] in ${relSliceFile(base, mid, sid, "PLAN")} + summary written`;
     }
     case "complete-slice":
-      return `Slice ${sid} marked [x] in ${relMilestoneFile(base, mid!, "ROADMAP")} + summary + UAT written`;
+      if (!sid) return null;
+      return `Slice ${sid} marked [x] in ${relMilestoneFile(base, mid, "ROADMAP")} + summary + UAT written`;
     case "replan-slice":
-      return `${relSliceFile(base, mid!, sid!, "REPLAN")} + updated ${relSliceFile(base, mid!, sid!, "PLAN")}`;
+      if (!sid) return null;
+      return `${relSliceFile(base, mid, sid, "REPLAN")} + updated ${relSliceFile(base, mid, sid, "PLAN")}`;
     case "reassess-roadmap":
-      return `${relSliceFile(base, mid!, sid!, "ASSESSMENT")} (roadmap reassessment)`;
+      if (!sid) return null;
+      return `${relSliceFile(base, mid, sid, "ASSESSMENT")} (roadmap reassessment)`;
     case "run-uat":
-      return `${relSliceFile(base, mid!, sid!, "UAT-RESULT")} (UAT result)`;
+      if (!sid) return null;
+      return `${relSliceFile(base, mid, sid, "UAT-RESULT")} (UAT result)`;
     case "complete-milestone":
-      return `${relMilestoneFile(base, mid!, "SUMMARY")} (milestone summary)`;
+      return `${relMilestoneFile(base, mid, "SUMMARY")} (milestone summary)`;
     case "fix-merge":
       return "Clean working tree with no unmerged files, no MERGE_HEAD, no SQUASH_MSG (merge conflict resolution)";
     default:

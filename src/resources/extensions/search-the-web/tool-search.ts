@@ -250,6 +250,7 @@ async function executeTavilySearch(
 // =============================================================================
 
 export function registerSearchTool(pi: ExtensionAPI) {
+  const piExt = pi as ExtensionAPI & { writeTempFile(content: string, opts?: { prefix?: string }): Promise<string> };
   pi.registerTool({
     name: "search-the-web",
     label: "Web Search",
@@ -365,7 +366,7 @@ export function registerSearchTool(pi: ExtensionAPI) {
         const truncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
         let content = truncation.content;
         if (truncation.truncated) {
-          const tempFile = await (pi as any).writeTempFile(output, { prefix: "web-search-" });
+          const tempFile = await piExt.writeTempFile(output, { prefix: "web-search-" });
           content += `\n\n[Truncated: ${truncation.outputLines}/${truncation.totalLines} lines (${formatSize(truncation.outputBytes)}/${formatSize(truncation.totalBytes)}). Full results: ${tempFile}]`;
         }
 
@@ -484,7 +485,7 @@ export function registerSearchTool(pi: ExtensionAPI) {
         let content = truncation.content;
 
         if (truncation.truncated) {
-          const tempFile = await (pi as any).writeTempFile(output, { prefix: "web-search-" });
+          const tempFile = await piExt.writeTempFile(output, { prefix: "web-search-" });
           content += `\n\n[Truncated: ${truncation.outputLines}/${truncation.totalLines} lines (${formatSize(truncation.outputBytes)}/${formatSize(truncation.totalBytes)}). Full results: ${tempFile}]`;
         }
 

@@ -235,6 +235,7 @@ async function executeTavilyLLMContext(
 // =============================================================================
 
 export function registerLLMContextTool(pi: ExtensionAPI) {
+  const piExt = pi as ExtensionAPI & { writeTempFile(content: string, opts?: { prefix?: string }): Promise<string> };
   pi.registerTool({
     name: "search_and_read",
     label: "Search & Read",
@@ -321,7 +322,7 @@ export function registerLLMContextTool(pi: ExtensionAPI) {
         const truncation = truncateHead(output, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
         let content = truncation.content;
         if (truncation.truncated) {
-          const tempFile = await (pi as any).writeTempFile(output, { prefix: "llm-context-" });
+          const tempFile = await piExt.writeTempFile(output, { prefix: "llm-context-" });
           content += `\n\n[Truncated. Full content: ${tempFile}]`;
         }
 
@@ -483,7 +484,7 @@ export function registerLLMContextTool(pi: ExtensionAPI) {
         let content = truncation.content;
 
         if (truncation.truncated) {
-          const tempFile = await (pi as any).writeTempFile(output, { prefix: "llm-context-" });
+          const tempFile = await piExt.writeTempFile(output, { prefix: "llm-context-" });
           content += `\n\n[Truncated. Full content: ${tempFile}]`;
         }
 
