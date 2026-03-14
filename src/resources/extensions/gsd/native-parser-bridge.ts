@@ -7,7 +7,7 @@
 import type { Roadmap, BoundaryMapEntry, RoadmapSliceEntry, RiskLevel } from './types.js';
 
 /** Safely parse JSON, returning fallback on failure. */
-function safeJsonParse<T>(input: string, fallback: T): T {
+export function safeJsonParse<T>(input: string, fallback: T): T {
   try {
     return JSON.parse(input) as T;
   } catch {

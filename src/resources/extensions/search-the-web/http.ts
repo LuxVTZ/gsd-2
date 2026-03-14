@@ -5,7 +5,7 @@
 import { URL } from "node:url";
 
 /** Block requests to private/internal IP ranges */
-function assertPublicUrl(urlStr: string): void {
+export function assertPublicUrl(urlStr: string): void {
   let hostname: string;
   try {
     hostname = new URL(urlStr).hostname;
