@@ -6,6 +6,15 @@
 
 import type { Roadmap, BoundaryMapEntry, RoadmapSliceEntry, RiskLevel } from './types.js';
 
+/** Safely parse JSON, returning fallback on failure. */
+function safeJsonParse<T>(input: string, fallback: T): T {
+  try {
+    return JSON.parse(input) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 let nativeModule: {
   parseFrontmatter: (content: string) => { metadata: string; body: string };
   extractSection: (content: string, heading: string, level?: number) => { content: string; found: boolean };
@@ -50,7 +59,7 @@ export function nativeSplitFrontmatter(content: string): { metadata: Record<stri
 
   const result = native.parseFrontmatter(content);
   return {
-    metadata: JSON.parse(result.metadata) as Record<string, unknown>,
+    metadata: safeJsonParse<Record<string, unknown>>(result.metadata, {}),
     body: result.body,
   };
 }
@@ -121,9 +130,9 @@ export function nativeBatchParseGsdFiles(directory: string): BatchParsedFile[] |
   const result = native.batchParseGsdFiles(directory);
   return result.files.map(f => ({
     path: f.path,
-    metadata: JSON.parse(f.metadata) as Record<string, unknown>,
+    metadata: safeJsonParse<Record<string, unknown>>(f.metadata, {}),
     body: f.body,
-    sections: JSON.parse(f.sections) as Record<string, string>,
+    sections: safeJsonParse<Record<string, string>>(f.sections, {}),
   }));
 }
 

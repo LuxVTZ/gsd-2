@@ -200,6 +200,7 @@ async function fetchApi<T>(
 		method,
 		headers,
 		body: method !== "GET" && body ? JSON.stringify(body) : undefined,
+		signal: AbortSignal.timeout(30_000),
 	});
 
 	if (!res.ok) {
@@ -436,7 +437,7 @@ export async function getPullRequestDiff(repo: RepoInfo, number: number): Promis
 	};
 	if (token) headers.Authorization = `Bearer ${token}`;
 
-	const res = await fetch(`https://api.github.com/repos/${repo.fullName}/pulls/${number}`, { headers });
+	const res = await fetch(`https://api.github.com/repos/${repo.fullName}/pulls/${number}`, { headers, signal: AbortSignal.timeout(30_000) });
 	if (!res.ok) throw new Error(`GitHub API ${res.status}: ${await res.text()}`);
 	return res.text();
 }

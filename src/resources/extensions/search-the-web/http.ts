@@ -2,6 +2,35 @@
  * HTTP utilities: retry with backoff, abort signal merging, error types, timing.
  */
 
+import { URL } from "node:url";
+
+/** Block requests to private/internal IP ranges */
+function assertPublicUrl(urlStr: string): void {
+  let hostname: string;
+  try {
+    hostname = new URL(urlStr).hostname;
+  } catch {
+    throw new Error(`Invalid URL: ${urlStr}`);
+  }
+  // Normalize IPv6
+  const h = hostname.replace(/^\[|\]$/g, "");
+  if (
+    h === "localhost" ||
+    h.startsWith("127.") ||
+    h === "::1" ||
+    h.startsWith("10.") ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+    h.startsWith("192.168.") ||
+    h.startsWith("169.254.") ||
+    h.startsWith("0.") ||
+    h.startsWith("fc") ||
+    h.startsWith("fd") ||
+    h.startsWith("fe80")
+  ) {
+    throw new Error(`SSRF blocked: requests to private/internal addresses are not allowed (${hostname})`);
+  }
+}
+
 // =============================================================================
 // Error Types
 // =============================================================================
@@ -137,6 +166,7 @@ export async function fetchWithRetry(
   options: RequestInit,
   maxRetries: number = 2
 ): Promise<Response> {
+  assertPublicUrl(url);
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -195,6 +225,7 @@ export async function fetchSimple(
   url: string,
   options: RequestInit & { timeoutMs?: number } = {}
 ): Promise<Response> {
+  assertPublicUrl(url);
   const { timeoutMs = 15_000, ...fetchOpts } = options;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);

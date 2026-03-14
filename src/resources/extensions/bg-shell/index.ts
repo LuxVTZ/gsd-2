@@ -24,6 +24,16 @@
  */
 
 import { StringEnum } from "@gsd/pi-ai";
+
+/** Compile a user-supplied regex with basic catastrophic-backtracking guard. */
+function safeRegExp(pattern: string, flags?: string): RegExp {
+	// Reject patterns with nested quantifiers that cause catastrophic backtracking
+	if (/(\+|\*|\{)\s*(\+|\*|\{)/.test(pattern) || /\(\?[^)]*\(/.test(pattern)) {
+		throw new Error(`Regex pattern rejected (potential ReDoS): ${pattern}`);
+	}
+	return new RegExp(pattern, flags);
+}
+
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -430,7 +440,7 @@ function analyzeLine(bg: BgProcess, line: string, stream: "stdout" | "stderr"): 
 		// Check custom ready pattern first
 		if (bg.readyPattern) {
 			try {
-				if (new RegExp(bg.readyPattern, "i").test(line)) {
+				if (safeRegExp(bg.readyPattern, "i").test(line)) {
 					transitionToReady(bg, `Custom pattern matched: ${line.trim().slice(0, 100)}`);
 				}
 			} catch { /* invalid regex, skip */ }
@@ -830,7 +840,7 @@ function getOutput(bg: BgProcess, opts: GetOutputOptions): string {
 	// Apply regex filter
 	if (filter) {
 		try {
-			const re = new RegExp(filter, "i");
+			const re = safeRegExp(filter, "i");
 			entries = entries.filter(e => re.test(e.line));
 		} catch { /* invalid regex */ }
 	}
@@ -972,7 +982,7 @@ async function sendAndWait(
 
 	let re: RegExp;
 	try {
-		re = new RegExp(waitPattern, "i");
+		re = safeRegExp(waitPattern, "i");
 	} catch {
 		return { matched: false, output: "Invalid wait pattern regex" };
 	}
