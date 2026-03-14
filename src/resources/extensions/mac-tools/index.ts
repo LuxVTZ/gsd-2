@@ -39,7 +39,7 @@ function getSourceMtime(): number {
 	// Check Package.swift
 	try {
 		latest = Math.max(latest, statSync(PACKAGE_SWIFT).mtimeMs);
-	} catch {}
+	} catch { /* non-fatal: Package.swift may not exist yet */ }
 	// Check all files in Sources/
 	try {
 		const files = readdirSync(SOURCES_DIR);
@@ -47,9 +47,9 @@ function getSourceMtime(): number {
 			try {
 				const mt = statSync(path.join(SOURCES_DIR, f)).mtimeMs;
 				if (mt > latest) latest = mt;
-			} catch {}
+			} catch { /* non-fatal: individual source file may have been removed */ }
 		}
-	} catch {}
+	} catch { /* non-fatal: Sources/ directory may not exist */ }
 	return latest;
 }
 

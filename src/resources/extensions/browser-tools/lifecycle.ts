@@ -103,10 +103,10 @@ export function attachPageListeners(p: Page, pageId: number): void {
 				try {
 					const body = await response.text();
 					entry.responseBody = body.slice(0, 2000);
-				} catch {}
+				} catch { /* non-fatal: body read may fail for redirected/aborted requests */ }
 			}
 			logPusher(networkLogs, entry);
-		} catch {}
+		} catch { /* non-fatal: network log capture is best-effort */ }
 	});
 
 	p.on("requestfailed", (request) => {
@@ -137,7 +137,7 @@ export function attachPageListeners(p: Page, pageId: number): void {
 			pageId,
 		});
 		// Auto-accept all dialogs to prevent page freezes
-		await dialog.accept().catch(() => {});
+		await dialog.accept().catch(() => { /* non-fatal: dialog may already be dismissed */ });
 	});
 
 	// Frame detach handler — clears activeFrame if the selected frame detaches

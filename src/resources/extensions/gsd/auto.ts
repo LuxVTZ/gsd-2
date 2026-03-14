@@ -774,7 +774,7 @@ export async function handleAgentEnd(
         ctx.ui.notify(`Auto-committed uncommitted changes.`, "info");
       }
     } catch {
-      // Non-fatal
+      // Non-fatal — auto-commit best-effort; dispatch continues without it
     }
 
     // Post-hook: fix mechanical bookkeeping the LLM may have skipped.
@@ -797,7 +797,7 @@ export async function handleAgentEnd(
       await rebuildState(basePath);
       autoCommitCurrentBranch(basePath, currentUnit.type, currentUnit.id);
     } catch {
-      // Non-fatal
+      // Non-fatal — state rebuild / auto-commit best-effort; dispatch continues
     }
   }
 

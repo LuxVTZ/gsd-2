@@ -50,7 +50,7 @@ export function writeLock(
       sessionFile,
     };
     writeFileSync(lockPath(basePath), JSON.stringify(data, null, 2), "utf-8");
-  } catch { /* non-fatal */ }
+  } catch { /* non-fatal: lock write is best-effort — session continues without crash protection */ }
 }
 
 /** Remove the lock file on clean stop. */
@@ -58,7 +58,7 @@ export function clearLock(basePath: string): void {
   try {
     const p = lockPath(basePath);
     if (existsSync(p)) unlinkSync(p);
-  } catch { /* non-fatal */ }
+  } catch { /* non-fatal: lock cleanup best-effort — stale lock is cleared on next read */ }
 }
 
 /** Check if a crash lock exists and return its data. */

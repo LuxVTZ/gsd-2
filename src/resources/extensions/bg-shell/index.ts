@@ -2838,7 +2838,7 @@ class BgManagerOverlay {
 				restartProcess(proc.id).then(() => {
 					this.invalidate();
 					this.tui.requestRender();
-				});
+				}).catch((err) => { console.error("[bg-shell] restart failed:", err?.message ?? err); });
 			}
 			return;
 		}

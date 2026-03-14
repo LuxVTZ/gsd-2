@@ -102,14 +102,14 @@ export class GSDDashboardOverlay {
       this.loading = false;
       this.invalidate();
       this.tui.requestRender();
-    });
+    }).catch(() => { /* dashboard data load failed — non-fatal */ });
 
     this.refreshTimer = setInterval(() => {
       this.dashData = getAutoDashboardData();
       this.loadData().then(() => {
         this.invalidate();
         this.tui.requestRender();
-      });
+      }).catch(() => { /* dashboard data load failed — non-fatal */ });
     }, 2000);
   }
 
