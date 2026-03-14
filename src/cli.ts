@@ -29,6 +29,7 @@ interface CliFlags {
   noSession?: boolean
   model?: string
   listModels?: string | true
+  mcpServer?: boolean
   extensions: string[]
   appendSystemPrompt?: string
   tools?: string[]
@@ -59,6 +60,8 @@ function parseCliArgs(argv: string[]): CliFlags {
       flags.tools = args[++i].split(',')
     } else if (arg === '--list-models') {
       flags.listModels = (i + 1 < args.length && !args[i + 1].startsWith('-')) ? args[++i] : true
+    } else if (arg === '--mcp-server') {
+      flags.mcpServer = true
     } else if (arg === '--version' || arg === '-v') {
       process.stdout.write((process.env.GSD_VERSION || '0.0.0') + '\n')
       process.exit(0)
@@ -74,6 +77,7 @@ function parseCliArgs(argv: string[]): CliFlags {
       process.stdout.write('  --extension <path>       Load additional extension\n')
       process.stdout.write('  --tools <a,b,c>          Restrict available tools\n')
       process.stdout.write('  --list-models [search]   List available models and exit\n')
+      process.stdout.write('  --mcp-server             Start as MCP server on stdio\n')
       process.stdout.write('  --version, -v            Print version and exit\n')
       process.stdout.write('  --help, -h               Print this help and exit\n')
       process.stdout.write('\nSubcommands:\n')
@@ -89,6 +93,15 @@ function parseCliArgs(argv: string[]): CliFlags {
 
 const cliFlags = parseCliArgs(process.argv)
 const isPrintMode = cliFlags.print || cliFlags.mode !== undefined
+
+// `gsd --mcp-server` — start MCP server on stdio and exit
+if (cliFlags.mcpServer) {
+  await import('./mcp-server/tool-adapter.js')
+  const { startMcpServer } = await import('./mcp-server/protocol.js')
+  startMcpServer()
+  // Server runs until stdin closes — don't continue to TUI
+  await new Promise(() => {}) // block forever
+}
 
 // `gsd config` — replay the setup wizard and exit
 if (cliFlags.messages[0] === 'config') {
