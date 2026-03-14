@@ -124,6 +124,9 @@ if (!isPrintMode) {
 }
 
 const modelRegistry = new ModelRegistry(authStorage)
+import { createLocalOpenAIProviderConfig, LOCAL_PROVIDER_ID, suppressLocalOpenAISubscriptionBadge } from './resources/extensions/gsd/local-openai-provider.js'
+modelRegistry.registerProvider(LOCAL_PROVIDER_ID, createLocalOpenAIProviderConfig())
+suppressLocalOpenAISubscriptionBadge(modelRegistry)
 const settingsManager = SettingsManager.create(agentDir)
 
 // --list-models: print available models and exit (no TTY needed)
@@ -183,6 +186,7 @@ const configuredAvailable = configuredProvider && configuredModel &&
   availableModels.some((m) => m.provider === configuredProvider && m.id === configuredModel)
 
 if (!configuredModel || !configuredExists || !configuredAvailable) {
+  const { pickPreferredStartupModel } = await import('./resources/extensions/gsd/model-selection.js')
   const piDefault = getPiDefaultModelAndProvider()
   const preferred =
     (piDefault
@@ -193,6 +197,7 @@ if (!configuredModel || !configuredExists || !configuredAvailable) {
     availableModels.find((m) => m.provider === 'anthropic' && m.id === 'claude-opus-4-6') ||
     availableModels.find((m) => m.provider === 'anthropic' && m.id.includes('opus')) ||
     availableModels.find((m) => m.provider === 'anthropic') ||
+    pickPreferredStartupModel(availableModels) ||
     availableModels[0]
   if (preferred) {
     settingsManager.setDefaultModelAndProvider(preferred.provider, preferred.id)

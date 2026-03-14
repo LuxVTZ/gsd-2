@@ -53,6 +53,7 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { shortcutDesc } from "../shared/terminal.js";
 import { Text } from "@gsd/pi-tui";
+import { registerLocalOpenAIProvider } from "./local-openai-provider.js";
 
 // ── Depth verification state ──────────────────────────────────────────────
 let depthVerificationDone = false;
@@ -91,6 +92,7 @@ const GSD_LOGO_LINES = [
 ];
 
 export default function (pi: ExtensionAPI) {
+  registerLocalOpenAIProvider(pi);
   registerGSDCommand(pi);
   registerWorktreeCommand(pi);
   registerExitCommand(pi);
