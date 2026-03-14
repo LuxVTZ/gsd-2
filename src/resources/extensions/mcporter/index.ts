@@ -32,7 +32,7 @@ const execAsync = promisify(exec);
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface McpServer {
+export interface McpServer {
 	name: string;
 	status: string;
 	transport?: string;
@@ -45,13 +45,13 @@ interface McpListResponse {
 	servers: McpServer[];
 }
 
-interface McpToolSchema {
+export interface McpToolSchema {
 	name: string;
 	description: string;
 	inputSchema?: Record<string, unknown>;
 }
 
-interface McpServerDetail {
+export interface McpServerDetail {
 	name: string;
 	status: string;
 	tools: McpToolSchema[];
@@ -64,7 +64,7 @@ const serverDetailCache = new Map<string, McpServerDetail>();
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function escapeShellArg(arg: string): string {
+export function escapeShellArg(arg: string): string {
 	if (process.platform === "win32") {
 		return `"${arg.replace(/"/g, '""')}"`;
 	}
@@ -128,7 +128,7 @@ async function getServerDetail(
 	return data;
 }
 
-function formatServerList(servers: McpServer[]): string {
+export function formatServerList(servers: McpServer[]): string {
 	if (servers.length === 0) return "No MCP servers found.";
 
 	const lines: string[] = [`${servers.length} MCP servers available:\n`];
@@ -147,7 +147,7 @@ function formatServerList(servers: McpServer[]): string {
 	return lines.join("\n");
 }
 
-function formatServerDetail(detail: McpServerDetail): string {
+export function formatServerDetail(detail: McpServerDetail): string {
 	const lines: string[] = [`${detail.name} — ${detail.tools.length} tools:\n`];
 
 	for (const tool of detail.tools) {

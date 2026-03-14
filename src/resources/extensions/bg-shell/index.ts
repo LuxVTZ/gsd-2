@@ -26,6 +26,29 @@
 import { StringEnum } from "@gsd/pi-ai";
 
 import { safeRegExp } from "./safe-regexp.ts";
+import {
+	formatUptime,
+	detectProcessType as _detectProcessType,
+	generateChangeSummary,
+	matchesErrorPattern,
+	matchesWarningPattern,
+	matchesReadinessPattern,
+	extractUrls,
+	extractPorts,
+	formatDigestText,
+	READINESS_PATTERNS,
+	ERROR_PATTERNS,
+	WARNING_PATTERNS,
+	URL_PATTERN,
+	PORT_PATTERN,
+	TEST_RESULT_PATTERNS,
+	BUILD_COMPLETE_PATTERNS,
+} from "./helpers.ts";
+import type {
+	ProcessType,
+	ProcessStatus,
+	OutputDigest,
+} from "./helpers.ts";
 
 import type {
 	ExtensionAPI,
@@ -84,15 +107,6 @@ function restoreWindowsVTInput(): void {
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-type ProcessStatus =
-	| "starting"
-	| "ready"
-	| "error"
-	| "exited"
-	| "crashed";
-
-type ProcessType = "server" | "build" | "test" | "watcher" | "generic" | "shell";
-
 interface ProcessEvent {
 	type:
 		| "started"
@@ -107,18 +121,6 @@ interface ProcessEvent {
 	timestamp: number;
 	detail: string;
 	data?: Record<string, unknown>;
-}
-
-interface OutputDigest {
-	status: ProcessStatus;
-	uptime: string;
-	errors: string[];
-	warnings: string[];
-	urls: string[];
-	ports: number[];
-	lastActivity: string;
-	outputLines: number;
-	changeSummary: string;
 }
 
 interface OutputLine {
@@ -214,89 +216,6 @@ const PORT_PROBE_TIMEOUT = 500;
 const READY_POLL_INTERVAL = 250;
 const DEFAULT_READY_TIMEOUT = 30000;
 
-// ── Pattern Databases ──────────────────────────────────────────────────────
-
-/** Patterns that indicate a process is ready/listening */
-const READINESS_PATTERNS: RegExp[] = [
-	// Node/JS servers
-	/listening\s+on\s+(?:port\s+)?(\d+)/i,
-	/server\s+(?:is\s+)?(?:running|started|listening)\s+(?:at|on)\s+/i,
-	/ready\s+(?:in|on|at)\s+/i,
-	/started\s+(?:server\s+)?on\s+/i,
-	// Next.js / Vite / etc
-	/Local:\s*https?:\/\//i,
-	/➜\s+Local:\s*/i,
-	/compiled\s+(?:successfully|client\s+and\s+server)/i,
-	// Python
-	/running\s+on\s+https?:\/\//i,
-	/Uvicorn\s+running/i,
-	/Development\s+server\s+is\s+running/i,
-	// Generic
-	/press\s+ctrl[\-+]c\s+to\s+(?:quit|stop)/i,
-	/watching\s+for\s+(?:file\s+)?changes/i,
-	/build\s+(?:completed|succeeded|finished)/i,
-];
-
-/** Patterns that indicate errors */
-const ERROR_PATTERNS: RegExp[] = [
-	/\berror\b[\s:[\](]/i,
-	/\bERROR\b/,
-	/\bfailed\b/i,
-	/\bFAILED\b/,
-	/\bfatal\b/i,
-	/\bFATAL\b/,
-	/\bexception\b/i,
-	/\bpanic\b/i,
-	/\bsegmentation\s+fault\b/i,
-	/\bsyntax\s*error\b/i,
-	/\btype\s*error\b/i,
-	/\breference\s*error\b/i,
-	/Cannot\s+find\s+module/i,
-	/Module\s+not\s+found/i,
-	/ENOENT/,
-	/EACCES/,
-	/EADDRINUSE/,
-	/TS\d{4,5}:/,     // TypeScript errors
-	/E\d{4,5}:/,      // Rust errors
-	/\[ERROR\]/,
-	/✖|✗|❌/,          // Common error symbols
-];
-
-/** Patterns that indicate warnings */
-const WARNING_PATTERNS: RegExp[] = [
-	/\bwarning\b[\s:[\](]/i,
-	/\bWARN(?:ING)?\b/,
-	/\bdeprecated\b/i,
-	/\bDEPRECATED\b/,
-	/⚠️?/,
-	/\[WARN\]/,
-];
-
-/** Patterns to extract URLs */
-const URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/gi;
-
-/** Patterns to extract port numbers from "listening" messages */
-const PORT_PATTERN = /(?:port|listening\s+on|:)\s*(\d{2,5})\b/gi;
-
-/** Patterns indicating test results */
-const TEST_RESULT_PATTERNS: RegExp[] = [
-	/(\d+)\s+(?:tests?\s+)?passed/i,
-	/(\d+)\s+(?:tests?\s+)?failed/i,
-	/Tests?:\s+(\d+)\s+passed/i,
-	/(\d+)\s+passing/i,
-	/(\d+)\s+failing/i,
-	/PASS|FAIL/,
-];
-
-/** Patterns indicating build completion */
-const BUILD_COMPLETE_PATTERNS: RegExp[] = [
-	/build\s+(?:completed|succeeded|finished|done)/i,
-	/compiled\s+(?:successfully|with\s+\d+\s+(?:error|warning))/i,
-	/✓\s+Built/i,
-	/webpack\s+\d+\.\d+/i,
-	/bundle\s+(?:is\s+)?ready/i,
-];
-
 // ── Process Registry ───────────────────────────────────────────────────────
 
 const processes = new Map<string, BgProcess>();
@@ -350,33 +269,9 @@ function getInfo(p: BgProcess): BgProcessInfo {
 	};
 }
 
-// ── Process Type Detection ─────────────────────────────────────────────────
+// ── Process Type Detection (delegate to helpers) ───────────────────────────
 
-function detectProcessType(command: string): ProcessType {
-	const cmd = command.toLowerCase();
-
-	// Server patterns
-	if (
-		/\b(serve|server|dev|start)\b/.test(cmd) &&
-		/\b(npm|yarn|pnpm|bun|node|next|vite|nuxt|astro|remix|gatsby|uvicorn|flask|django|rails|cargo)\b/.test(cmd)
-	) return "server";
-	if (/\b(uvicorn|gunicorn|flask\s+run|manage\.py\s+runserver|rails\s+s)\b/.test(cmd)) return "server";
-	if (/\b(http-server|live-server|serve)\b/.test(cmd)) return "server";
-
-	// Build patterns
-	if (/\b(build|compile|make|tsc|webpack|rollup|esbuild|swc)\b/.test(cmd)) {
-		if (/\b(watch|--watch|-w)\b/.test(cmd)) return "watcher";
-		return "build";
-	}
-
-	// Test patterns
-	if (/\b(test|jest|vitest|mocha|pytest|cargo\s+test|go\s+test|rspec)\b/.test(cmd)) return "test";
-
-	// Watcher patterns
-	if (/\b(watch|nodemon|chokidar|fswatch|inotifywait)\b/.test(cmd)) return "watcher";
-
-	return "generic";
-}
+const detectProcessType = _detectProcessType;
 
 // ── Output Analysis ────────────────────────────────────────────────────────
 
@@ -1161,16 +1056,7 @@ function loadManifest(cwd: string): ProcessManifest[] {
 	return [];
 }
 
-// ── Utilities ──────────────────────────────────────────────────────────────
-
-function formatUptime(ms: number): string {
-	const seconds = Math.floor(ms / 1000);
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
-	const hours = Math.floor(minutes / 60);
-	return `${hours}h ${minutes % 60}m`;
-}
+// ── Utilities (formatUptime, formatTimeAgo from helpers.ts) ────────────────
 
 function formatTimeAgo(timestamp: number): string {
 	return formatUptime(Date.now() - timestamp) + " ago";
@@ -1195,36 +1081,6 @@ function cleanupAll(): void {
 		if (bg.alive) killProcess(id, "SIGKILL");
 	}
 	processes.clear();
-}
-
-// ── Format Digest for LLM ──────────────────────────────────────────────────
-
-function formatDigestText(bg: BgProcess, digest: OutputDigest): string {
-	let text = `Process ${bg.id} (${bg.label}):\n`;
-	text += `  status: ${digest.status}\n`;
-	text += `  type: ${bg.processType}\n`;
-	text += `  uptime: ${digest.uptime}\n`;
-
-	if (digest.ports.length > 0) text += `  ports: ${digest.ports.join(", ")}\n`;
-	if (digest.urls.length > 0) text += `  urls: ${digest.urls.join(", ")}\n`;
-
-	text += `  output: ${digest.outputLines} lines\n`;
-	text += `  changes: ${digest.changeSummary}`;
-
-	if (digest.errors.length > 0) {
-		text += `\n  errors (${digest.errors.length}):`;
-		for (const err of digest.errors) {
-			text += `\n    - ${err}`;
-		}
-	}
-	if (digest.warnings.length > 0) {
-		text += `\n  warnings (${digest.warnings.length}):`;
-		for (const w of digest.warnings) {
-			text += `\n    - ${w}`;
-		}
-	}
-
-	return text;
 }
 
 // ── Extension Entry Point ──────────────────────────────────────────────────
