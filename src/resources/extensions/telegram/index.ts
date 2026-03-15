@@ -27,6 +27,9 @@ import {
 	createNotificationDebouncer,
 	shouldNotifyTool,
 } from "./notifications.js";
+import { routeCommand, type CommandContext } from "./commands.js";
+import { ApprovalManager } from "./inline-actions.js";
+import { requiresApproval } from "./config.js";
 import { createLogger } from "../shared/logger.js";
 
 const logger = createLogger("telegram");
@@ -56,9 +59,24 @@ export default function (pi: ExtensionAPI) {
 		}
 	}, 500);
 
+	// Approval manager for sensitive tool calls
+	const approvalManager = new ApprovalManager(client);
+
+	// Command context — updated on each session event
+	let latestCtx: import("@gsd/pi-coding-agent").ExtensionContext | null = null;
+	const cmdCtx: CommandContext = { pi, ctx: null, client };
+
+	// Register incoming message handler for Telegram commands
+	client.onMessage(async (text) => {
+		cmdCtx.ctx = latestCtx;
+		const response = await routeCommand(text, cmdCtx);
+		await client.sendMessage(response, { parseMode: "HTML" });
+	});
+
 	// ─── Session lifecycle ──────────────────────────────────────────
 
 	pi.on("session_start", async (_event, ctx) => {
+		latestCtx = ctx;
 		client.start();
 		const cwd = process.cwd();
 		const model = ctx.model?.name;
@@ -67,6 +85,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		toolDebouncer.flush();
+		approvalManager.cleanup();
 		await client.sendMessage(formatSessionEnd(), { parseMode: "HTML" });
 		await client.stop();
 	});
@@ -81,7 +100,8 @@ export default function (pi: ExtensionAPI) {
 
 	// ─── Agent lifecycle ────────────────────────────────────────────
 
-	pi.on("agent_start", async () => {
+	pi.on("agent_start", async (_event, ctx) => {
+		latestCtx = ctx;
 		await client.sendMessage(formatAgentStart(), { parseMode: "HTML" });
 	});
 
@@ -90,6 +110,19 @@ export default function (pi: ExtensionAPI) {
 		const success = !event.error;
 		const errorMsg = event.error ? String(event.error) : undefined;
 		await client.sendMessage(formatAgentEnd(success, errorMsg), { parseMode: "HTML" });
+	});
+
+	// ─── Tool approval gate ─────────────────────────────────────────
+
+	pi.on("tool_call", async (event) => {
+		if (!requiresApproval(event.toolName)) return;
+		const approved = await approvalManager.requestApproval(
+			event.toolName,
+			(event.params ?? {}) as Record<string, unknown>,
+		);
+		if (!approved) {
+			return { block: true, reason: "Rejected via Telegram" };
+		}
 	});
 
 	// ─── Tool execution ─────────────────────────────────────────────
