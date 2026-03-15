@@ -7,6 +7,7 @@ import type { ChannelAdapter, RemotePrompt, RemoteQuestion, RemoteAnswer } from 
 import { resolveRemoteConfig, type ResolvedConfig } from "./config.js";
 import { SlackAdapter } from "./slack-adapter.js";
 import { DiscordAdapter } from "./discord-adapter.js";
+import { TelegramAdapter } from "./telegram-adapter.js";
 import { createPromptRecord, writePromptRecord, markPromptAnswered, markPromptDispatched, markPromptStatus, updatePromptRecord } from "./store.js";
 
 interface ToolResult {
@@ -111,9 +112,9 @@ function createPrompt(questions: QuestionInput[], config: ResolvedConfig): Remot
 }
 
 function createAdapter(config: ResolvedConfig): ChannelAdapter {
-  return config.channel === "slack"
-    ? new SlackAdapter(config.token, config.channelId)
-    : new DiscordAdapter(config.token, config.channelId);
+  if (config.channel === "slack") return new SlackAdapter(config.token, config.channelId);
+  if (config.channel === "telegram") return new TelegramAdapter(config.token, config.channelId);
+  return new DiscordAdapter(config.token, config.channelId);
 }
 
 async function pollUntilDone(

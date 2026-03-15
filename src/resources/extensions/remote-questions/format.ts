@@ -161,3 +161,80 @@ function parseAnswerForQuestion(text: string, q: RemoteQuestion): { answers: str
 function truncateNote(text: string): string {
   return text.length > MAX_USER_NOTE_LENGTH ? text.slice(0, MAX_USER_NOTE_LENGTH) + "…" : text;
 }
+
+// ─── Telegram formatting ────────────────────────────────────────────
+
+export interface TelegramInlineButton {
+  text: string;
+  callback_data: string;
+}
+
+export function formatForTelegram(prompt: RemotePrompt): { text: string; inlineKeyboard: TelegramInlineButton[][] } {
+  const lines: string[] = ["<b>GSD needs your input</b>\n"];
+  const inlineKeyboard: TelegramInlineButton[][] = [];
+
+  for (const q of prompt.questions) {
+    lines.push(`<b>${escapeHtml(q.header)}</b>`);
+    lines.push(escapeHtml(q.question));
+    lines.push("");
+
+    for (let i = 0; i < q.options.length; i++) {
+      const opt = q.options[i];
+      lines.push(`${i + 1}. <b>${escapeHtml(opt.label)}</b> — ${escapeHtml(opt.description)}`);
+
+      // Build inline keyboard row per option
+      inlineKeyboard.push([{
+        text: `${i + 1}. ${opt.label}`,
+        callback_data: `rq:${q.id}:${i}`,
+      }]);
+    }
+
+    lines.push("");
+    lines.push(q.allowMultiple
+      ? "<i>Tap a button or reply with comma-separated numbers (1,3)</i>"
+      : "<i>Tap a button or reply with a number</i>");
+  }
+
+  return { text: lines.join("\n"), inlineKeyboard };
+}
+
+export function parseTelegramReply(text: string, questions: RemoteQuestion[]): RemoteAnswer {
+  const answers: RemoteAnswer["answers"] = {};
+  const trimmed = text.trim();
+
+  // Check for callback data format: rq:{questionId}:{optionIndex}
+  const callbackMatch = trimmed.match(/^rq:([^:]+):(\d+)$/);
+  if (callbackMatch) {
+    const questionId = callbackMatch[1];
+    const optionIndex = parseInt(callbackMatch[2], 10);
+    const question = questions.find((q) => q.id === questionId);
+    if (question && optionIndex >= 0 && optionIndex < question.options.length) {
+      answers[question.id] = { answers: [question.options[optionIndex].label] };
+      // Fill remaining questions with empty
+      for (const q of questions) {
+        if (!answers[q.id]) answers[q.id] = { answers: [], user_note: "Not answered" };
+      }
+      return { answers };
+    }
+  }
+
+  // Fall back to text parsing (same logic as Slack)
+  if (questions.length === 1) {
+    answers[questions[0].id] = parseAnswerForQuestion(trimmed, questions[0]);
+    return { answers };
+  }
+
+  const parts = trimmed.includes(";")
+    ? trimmed.split(";").map((s) => s.trim()).filter(Boolean)
+    : trimmed.split("\n").map((s) => s.trim()).filter(Boolean);
+
+  for (let i = 0; i < questions.length; i++) {
+    answers[questions[i].id] = parseAnswerForQuestion(parts[i] ?? "", questions[i]);
+  }
+
+  return { answers };
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
