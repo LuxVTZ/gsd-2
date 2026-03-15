@@ -56,3 +56,7 @@ export function updateSliceProgressCache(base: string, mid: string, activeSid?: 
 export function getRoadmapSlicesSync(): { done: number; total: number; activeSliceTasks: { done: number; total: number } | null } | null {
   return cachedSliceProgress;
 }
+
+export function resetSliceProgressCache(): void {
+  cachedSliceProgress = null;
+}

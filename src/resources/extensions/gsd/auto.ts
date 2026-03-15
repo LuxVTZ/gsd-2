@@ -94,7 +94,7 @@ import { nativeCommitCountBetween } from "./native-git-bridge.js";
 import { getPriorSliceCompletionBlocker } from "./dispatch-guard.js";
 import type { GitPreferences } from "./git-service.js";
 import { showNextAction } from "../shared/next-action-ui.js";
-import { getRoadmapSlicesSync, updateSliceProgressCache } from "./auto-roadmap.js";
+import { getRoadmapSlicesSync, updateSliceProgressCache, resetSliceProgressCache } from "./auto-roadmap.js";
 import {
   recoverTimedOutUnit,
   skipExecuteTask,
@@ -381,7 +381,7 @@ export async function stopAuto(ctx?: ExtensionContext, pi?: ExtensionAPI): Promi
   unitRecoveryCount.clear();
   currentUnit = null;
   currentMilestoneId = null;
-  cachedSliceProgress = null;
+  resetSliceProgressCache();
   pendingCrashRecovery = null;
   _handlingAgentEnd = false;
   ctx?.ui.setStatus("gsd-auto", undefined);
