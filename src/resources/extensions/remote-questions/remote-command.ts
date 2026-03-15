@@ -148,17 +148,24 @@ async function handleSetupTelegram(ctx: ExtensionCommandContext): Promise<void> 
   const botUsername = auth.result?.username ?? "unknown";
   ctx.ui.notify(`Bot validated: @${botUsername}`, "info");
 
-  const chatId = await promptInput(ctx, "Your Telegram Chat ID", "Your numeric user ID (get from @userinfobot)");
+  const chatId = await promptInput(ctx, "Your Telegram Chat ID", "Your numeric user ID (get from @userinfobot). IMPORTANT: first send /start to the bot!");
   if (!chatId) return void ctx.ui.notify("Telegram setup cancelled.", "info");
   if (!/^-?\d{1,15}$/.test(chatId)) return void ctx.ui.notify("Invalid chat ID format — expected a numeric ID.", "error");
 
   // Send test message
+  ctx.ui.notify("Sending test message... (make sure you sent /start to the bot first)", "info");
   const send = await fetchJson(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, text: "✅ GSD remote questions connected." }),
   });
-  if (!send?.ok) return void ctx.ui.notify(`Could not send test message: ${send?.description ?? "unknown error"}`, "error");
+  if (!send?.ok) {
+    const desc = send?.description ?? "unknown error";
+    if (desc.includes("chat not found")) {
+      return void ctx.ui.notify("Chat not found — you must send /start to the bot in Telegram first, then retry.", "error");
+    }
+    return void ctx.ui.notify(`Could not send test message: ${desc}`, "error");
+  }
 
   saveProviderToken("telegram_bot", token);
   process.env.GSD_TELEGRAM_TOKEN = token;

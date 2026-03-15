@@ -102,14 +102,15 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_start", async (_event, ctx) => {
 		latestCtx = ctx;
-		await client.sendMessage(formatAgentStart(), { parseMode: "HTML" });
+		// No message — response will be sent on message_end
 	});
 
 	pi.on("agent_end", async (event) => {
 		toolDebouncer.flush();
-		const success = !event.error;
-		const errorMsg = event.error ? String(event.error) : undefined;
-		await client.sendMessage(formatAgentEnd(success, errorMsg), { parseMode: "HTML" });
+		// Only notify on error — success response already sent via message_end
+		if (event.error) {
+			await client.sendMessage(formatAgentEnd(false, String(event.error)), { parseMode: "HTML" });
+		}
 	});
 
 	// ─── Tool approval gate ─────────────────────────────────────────
@@ -137,16 +138,21 @@ export default function (pi: ExtensionAPI) {
 		toolDebouncer.add(formatToolEnd(event.toolName, !event.error));
 	});
 
-	// ─── Message summary ────────────────────────────────────────────
+	// ─── Agent response → Telegram ─────────────────────────────────
 
 	pi.on("message_end", async (event) => {
-		if (!event.content) return;
-		const text = typeof event.content === "string" ? event.content : JSON.stringify(event.content);
-		if (text.length < 10) return; // Skip trivial messages
+		const msg = event.message as { role?: string; content?: Array<{ type: string; text?: string }> };
+		if (msg.role !== "assistant" || !Array.isArray(msg.content)) return;
 
-		const summary = formatMessageSummary(text);
+		const textParts = msg.content
+			.filter((part) => part.type === "text" && part.text)
+			.map((part) => part.text!);
+		const fullText = textParts.join("");
+		if (fullText.length < 10) return;
+
+		const summary = formatMessageSummary(fullText);
 		for (const chunk of splitMessage(summary)) {
-			await client.sendMessage(chunk, { parseMode: "HTML", disableNotification: true });
+			await client.sendMessage(chunk, { parseMode: "HTML" });
 		}
 	});
 
