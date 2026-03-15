@@ -177,5 +177,5 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	logger.info("Telegram extension loaded");
+	logger.debug("Telegram extension loaded");
 }

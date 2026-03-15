@@ -105,7 +105,7 @@ export class TelegramBotClient {
 		this.running = true;
 		// Fire-and-forget — bot.start() runs its own polling loop
 		this.bot.start({
-			onStart: () => logger.info("Telegram bot started"),
+			onStart: () => logger.debug("Telegram bot started"),
 			allowed_updates: ["message", "callback_query"],
 		});
 		logger.debug("Telegram bot polling started");
@@ -117,7 +117,7 @@ export class TelegramBotClient {
 		this.running = false;
 		try {
 			await this.bot.stop();
-			logger.info("Telegram bot stopped");
+			logger.debug("Telegram bot stopped");
 		} catch (err) {
 			logger.error(`Error stopping bot: ${(err as Error).message}`);
 		}
