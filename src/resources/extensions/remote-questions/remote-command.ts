@@ -21,6 +21,7 @@ export async function handleRemote(
 
   if (trimmed === "slack") return handleSetupSlack(ctx);
   if (trimmed === "discord") return handleSetupDiscord(ctx);
+  if (trimmed === "telegram") return handleSetupTelegram(ctx);
   if (trimmed === "status") return handleRemoteStatus(ctx);
   if (trimmed === "disconnect") return handleDisconnect(ctx);
 
@@ -136,6 +137,36 @@ async function handleSetupDiscord(ctx: ExtensionCommandContext): Promise<void> {
   ctx.ui.notify(`Discord connected — remote questions enabled for channel ${channelId}.`, "info");
 }
 
+async function handleSetupTelegram(ctx: ExtensionCommandContext): Promise<void> {
+  const token = await promptMaskedInput(ctx, "Telegram Bot Token", "Paste your bot token from @BotFather");
+  if (!token) return void ctx.ui.notify("Telegram setup cancelled.", "info");
+
+  ctx.ui.notify("Validating token...", "info");
+  const auth = await fetchJson(`https://api.telegram.org/bot${token}/getMe`);
+  if (!auth?.ok) return void ctx.ui.notify("Token validation failed — check the token from @BotFather.", "error");
+
+  const botUsername = auth.result?.username ?? "unknown";
+  ctx.ui.notify(`Bot validated: @${botUsername}`, "info");
+
+  const chatId = await promptInput(ctx, "Your Telegram Chat ID", "Your numeric user ID (get from @userinfobot)");
+  if (!chatId) return void ctx.ui.notify("Telegram setup cancelled.", "info");
+  if (!/^-?\d{1,15}$/.test(chatId)) return void ctx.ui.notify("Invalid chat ID format — expected a numeric ID.", "error");
+
+  // Send test message
+  const send = await fetchJson(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text: "✅ GSD remote questions connected." }),
+  });
+  if (!send?.ok) return void ctx.ui.notify(`Could not send test message: ${send?.description ?? "unknown error"}`, "error");
+
+  saveProviderToken("telegram_bot", token);
+  process.env.GSD_TELEGRAM_TOKEN = token;
+  process.env.GSD_TELEGRAM_OWNER_ID = chatId;
+  saveRemoteQuestionsConfig("telegram", chatId);
+  ctx.ui.notify(`Telegram connected — remote questions enabled for chat ${chatId} (@${botUsername}).`, "info");
+}
+
 async function handleRemoteStatus(ctx: ExtensionCommandContext): Promise<void> {
   const status = getRemoteConfigStatus();
   const config = resolveRemoteConfig();
@@ -161,9 +192,10 @@ async function handleDisconnect(ctx: ExtensionCommandContext): Promise<void> {
   if (!channel) return void ctx.ui.notify("No remote channel configured — nothing to disconnect.", "info");
 
   removeRemoteQuestionsConfig();
-  removeProviderToken(channel === "slack" ? "slack_bot" : "discord_bot");
+  removeProviderToken(channel === "slack" ? "slack_bot" : channel === "discord" ? "discord_bot" : "telegram_bot");
   if (channel === "slack") delete process.env.SLACK_BOT_TOKEN;
   if (channel === "discord") delete process.env.DISCORD_BOT_TOKEN;
+  if (channel === "telegram") delete process.env.GSD_TELEGRAM_TOKEN;
   ctx.ui.notify(`Remote questions disconnected (${channel}).`, "info");
 }
 
@@ -219,7 +251,7 @@ function removeProviderToken(provider: string): void {
   auth.set(provider, { type: "api_key", key: "" });
 }
 
-export function saveRemoteQuestionsConfig(channel: "slack" | "discord", channelId: string): void {
+export function saveRemoteQuestionsConfig(channel: "slack" | "discord" | "telegram", channelId: string): void {
   const prefsPath = getGlobalGSDPreferencesPath();
   const block = [
     "remote_questions:",
