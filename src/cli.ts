@@ -137,7 +137,7 @@ if (!isPrintMode) {
 }
 
 const modelRegistry = new ModelRegistry(authStorage)
-import { createLocalOpenAIProviderConfig, LOCAL_PROVIDER_ID, suppressLocalOpenAISubscriptionBadge } from './resources/extensions/gsd/local-openai-provider.js'
+import { createLocalOpenAIProviderConfig, LOCAL_PROVIDER_ID, suppressLocalOpenAISubscriptionBadge } from './local-openai-provider.js'
 modelRegistry.registerProvider(LOCAL_PROVIDER_ID, createLocalOpenAIProviderConfig())
 suppressLocalOpenAISubscriptionBadge(modelRegistry)
 const settingsManager = SettingsManager.create(agentDir)
