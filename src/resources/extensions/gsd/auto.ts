@@ -16,9 +16,9 @@ import type {
   ExtensionCommandContext,
 } from "@gsd/pi-coding-agent";
 
-import { deriveState } from "./state.js";
+import { deriveState, invalidateStateCache } from "./state.js";
 import type { GSDState } from "./types.js";
-import { loadFile, parseContinue, parsePlan, parseRoadmap, parseSummary, extractUatType, inlinePriorMilestoneSummary, getManifestStatus } from "./files.js";
+import { loadFile, parseContinue, parsePlan, parseRoadmap, parseSummary, extractUatType, inlinePriorMilestoneSummary, getManifestStatus, clearParseCache } from "./files.js";
 export { inlinePriorMilestoneSummary };
 export {
   skipExecuteTask,
@@ -29,13 +29,14 @@ export {
 } from "./auto-recovery.js";
 import type { UatType } from "./files.js";
 import { collectSecretsFromManifest } from "../get-secrets-from-user.js";
-import { loadPrompt } from "./prompt-loader.js";
+import { loadPrompt, inlineTemplate } from "./prompt-loader.js";
 import {
   gsdRoot, resolveMilestoneFile, resolveSliceFile, resolveSlicePath,
   resolveMilestonePath, resolveDir, resolveTasksDir, resolveTaskFiles, resolveTaskFile,
   relMilestoneFile, relSliceFile, relTaskFile, relSlicePath, relMilestonePath,
   milestonesDir, resolveGsdRootFile, relGsdRootFile,
   buildMilestoneFileName, buildSliceFileName, buildTaskFileName,
+  clearPathCache,
 } from "./paths.js";
 import { saveActivityLog } from "./activity-log.js";
 import { synthesizeCrashRecovery, getDeepDiagnostic } from "./session-forensics.js";
@@ -48,6 +49,18 @@ import {
 } from "./unit-runtime.js";
 import { resolveAutoSupervisorConfig, resolveModelForUnit, resolveModelWithFallbacksForUnit, resolveSkillDiscoveryMode, loadEffectiveGSDPreferences } from "./preferences.js";
 import type { GSDPreferences } from "./preferences.js";
+import {
+  checkPostUnitHooks,
+  getActiveHook,
+  resetHookState,
+  isRetryPending,
+  consumeRetryTrigger,
+  runPreDispatchHooks,
+  persistHookState,
+  restoreHookState,
+  clearPersistedHookState,
+  formatHookStatus,
+} from "./post-unit-hooks.js";
 import {
   validatePlanBoundary,
   validateExecuteBoundary,
@@ -359,6 +372,8 @@ export async function stopAuto(ctx?: ExtensionContext, pi?: ExtensionAPI): Promi
   }
 
   resetMetrics();
+  resetHookState();
+  if (basePath) clearPersistedHookState(basePath);
   active = false;
   paused = false;
   stepMode = false;
@@ -576,6 +591,8 @@ export async function startAuto(
     ctx.ui.setStatus("gsd-auto", stepMode ? "next" : "auto");
     ctx.ui.setFooter(hideFooter);
     ctx.ui.notify(stepMode ? "Step-mode resumed." : "Auto-mode resumed.", "info");
+    // Restore hook state from disk in case session was interrupted
+    restoreHookState(base);
     // Rebuild disk state before resuming — user interaction during pause may have changed files
     try { await rebuildState(base); } catch { /* non-fatal */ }
     try {
@@ -586,6 +603,9 @@ export async function startAuto(
     } catch { /* non-fatal */ }
     // Self-heal: clear stale runtime records where artifacts already exist
     await selfHealRuntimeRecords(base, ctx);
+    invalidateStateCache();
+    clearParseCache();
+    clearPathCache();
     await dispatchNextUnit(ctx, pi);
     return;
   }
@@ -681,6 +701,8 @@ export async function startAuto(
   unitRecoveryCount.clear();
   completedKeySet.clear();
   loadPersistedKeys(base, completedKeySet);
+  resetHookState();
+  restoreHookState(base);
   autoStartTime = Date.now();
   completedUnits = [];
   currentUnit = null;
@@ -775,6 +797,12 @@ export async function handleAgentEnd(
   // Unit completed — clear its timeout
   clearUnitTimeout();
 
+  // Invalidate deriveState() cache — the unit just completed and may have
+  // written planning files (task summaries, roadmap checkboxes, etc.)
+  invalidateStateCache();
+  clearParseCache();
+  clearPathCache();
+
   // Small delay to let files settle (git commits, file writes)
   await new Promise(r => setTimeout(r, 500));
 
@@ -810,6 +838,79 @@ export async function handleAgentEnd(
       autoCommitCurrentBranch(basePath, currentUnit.type, currentUnit.id);
     } catch {
       // Non-fatal — state rebuild / auto-commit best-effort; dispatch continues
+    }
+  }
+
+  // ── Post-unit hooks: check if a configured hook should run before normal dispatch ──
+  if (currentUnit && !stepMode) {
+    const hookUnit = checkPostUnitHooks(currentUnit.type, currentUnit.id, basePath);
+    if (hookUnit) {
+      // Dispatch the hook unit instead of normal flow
+      const hookStartedAt = Date.now();
+      if (currentUnit) {
+        const modelId = ctx.model?.id ?? "unknown";
+        snapshotUnitMetrics(ctx, currentUnit.type, currentUnit.id, currentUnit.startedAt, modelId);
+        saveActivityLog(ctx, basePath, currentUnit.type, currentUnit.id);
+      }
+      currentUnit = { type: hookUnit.unitType, id: hookUnit.unitId, startedAt: hookStartedAt };
+      writeUnitRuntimeRecord(basePath, hookUnit.unitType, hookUnit.unitId, hookStartedAt, {
+        phase: "dispatched",
+        wrapupWarningSent: false,
+        timeoutAt: null,
+        lastProgressAt: hookStartedAt,
+        progressCount: 0,
+        lastProgressKind: "dispatch",
+      });
+
+      const state = await deriveState(basePath);
+      updateProgressWidget(ctx, hookUnit.unitType, hookUnit.unitId, state);
+      const hookState = getActiveHook();
+      ctx.ui.notify(
+        `Running post-unit hook: ${hookUnit.hookName} (cycle ${hookState?.cycle ?? 1})`,
+        "info",
+      );
+
+      // Switch model if the hook specifies one
+      if (hookUnit.model) {
+        const availableModels = ctx.modelRegistry.getAvailable();
+        const match = availableModels.find(m =>
+          m.id === hookUnit.model || `${m.provider}/${m.id}` === hookUnit.model,
+        );
+        if (match) {
+          try {
+            await pi.setModel(match);
+          } catch { /* non-fatal — use current model */ }
+        }
+      }
+
+      const result = await cmdCtx!.newSession();
+      if (result.cancelled) {
+        resetHookState();
+        await stopAuto(ctx, pi);
+        return;
+      }
+      const sessionFile = ctx.sessionManager.getSessionFile();
+      writeLock(basePath, hookUnit.unitType, hookUnit.unitId, completedUnits.length, sessionFile);
+      // Persist hook state so cycle counts survive crashes
+      persistHookState(basePath);
+      pi.sendMessage(
+        { customType: "gsd-auto", content: hookUnit.prompt, display: verbose },
+        { triggerTurn: true },
+      );
+      return; // handleAgentEnd will fire again when hook session completes
+    }
+
+    // Check if a hook requested a retry of the trigger unit
+    if (isRetryPending()) {
+      const trigger = consumeRetryTrigger();
+      if (trigger) {
+        ctx.ui.notify(
+          `Hook requested retry of ${trigger.unitType} ${trigger.unitId}.`,
+          "info",
+        );
+        // Fall through to normal dispatchNextUnit — state derivation will
+        // re-select the same unit since it hasn't been marked complete
+      }
     }
   }
 
@@ -969,6 +1070,9 @@ async function dispatchNextUnit(
     return;
   }
 
+  // Clear stale directory listing cache so deriveState sees fresh disk state (#431)
+  clearPathCache();
+
   let state = await deriveState(basePath);
   let mid = state.activeMilestone?.id;
   let midTitle = state.activeMilestone?.title;
@@ -1031,6 +1135,9 @@ async function dispatchNextUnit(
           }
         }
         // Re-derive state from the now-merged working tree
+        invalidateStateCache();
+        clearParseCache();
+        clearPathCache();
         state = await deriveState(basePath);
         mid = state.activeMilestone?.id;
         midTitle = state.activeMilestone?.title;
@@ -1095,6 +1202,9 @@ async function dispatchNextUnit(
               "info",
             );
             // Re-derive state from main so downstream logic sees merged state
+            invalidateStateCache();
+            clearParseCache();
+            clearPathCache();
             state = await deriveState(basePath);
             mid = state.activeMilestone?.id;
             midTitle = state.activeMilestone?.title;
@@ -1412,6 +1522,28 @@ async function dispatchNextUnit(
     }
   }
 
+  // ── Pre-dispatch hooks: modify, skip, or replace the unit before dispatch ──
+  const preDispatchResult = runPreDispatchHooks(unitType, unitId, prompt, basePath);
+  if (preDispatchResult.firedHooks.length > 0) {
+    ctx.ui.notify(
+      `Pre-dispatch hook${preDispatchResult.firedHooks.length > 1 ? "s" : ""}: ${preDispatchResult.firedHooks.join(", ")}`,
+      "info",
+    );
+  }
+  if (preDispatchResult.action === "skip") {
+    ctx.ui.notify(`Skipping ${unitType} ${unitId} (pre-dispatch hook).`, "info");
+    // Yield then re-dispatch to advance to next unit
+    await new Promise(r => setImmediate(r));
+    await dispatchNextUnit(ctx, pi);
+    return;
+  }
+  if (preDispatchResult.action === "replace") {
+    prompt = preDispatchResult.prompt ?? prompt;
+    if (preDispatchResult.unitType) unitType = preDispatchResult.unitType;
+  } else if (preDispatchResult.prompt) {
+    prompt = preDispatchResult.prompt;
+  }
+
   const priorSliceBlocker = getPriorSliceCompletionBlocker(basePath, getMainBranch(basePath), unitType, unitId);
   if (priorSliceBlocker) {
     await stopAuto(ctx, pi);
@@ -1652,16 +1784,37 @@ async function dispatchNextUnit(
     let modelSet = false;
 
     for (const modelId of modelsToTry) {
-      // Support "provider/model" format for explicit provider targeting
+      // Resolve model from available models.
+      // Handles multiple formats:
+      //   "provider/model"           → explicit provider targeting (e.g. "anthropic/claude-opus-4-6")
+      //   "bare-id"                  → match by ID across providers
+      //   "org/model-name"           → OpenRouter-style IDs where the full string is the model ID
+      //   "openrouter/org/model"     → explicit provider + OpenRouter model ID
       const slashIdx = modelId.indexOf("/");
       let model;
       if (slashIdx !== -1) {
-        const provider = modelId.substring(0, slashIdx);
+        const maybeProvider = modelId.substring(0, slashIdx);
         const id = modelId.substring(slashIdx + 1);
-        model = availableModels.find(
-          m => m.provider.toLowerCase() === provider.toLowerCase()
-            && m.id.toLowerCase() === id.toLowerCase(),
-        );
+
+        // Check if the prefix before the first slash is a known provider
+        const knownProviders = new Set(availableModels.map(m => m.provider.toLowerCase()));
+        if (knownProviders.has(maybeProvider.toLowerCase())) {
+          // Explicit "provider/model" format (handles "openrouter/org/model" too)
+          model = availableModels.find(
+            m => m.provider.toLowerCase() === maybeProvider.toLowerCase()
+              && m.id.toLowerCase() === id.toLowerCase(),
+          );
+        }
+
+        // If the prefix wasn't a known provider, or no match was found within that provider,
+        // try matching the full string as a model ID (OpenRouter-style IDs like "org/model-name")
+        if (!model) {
+          const lower = modelId.toLowerCase();
+          model = availableModels.find(
+            m => m.id.toLowerCase() === lower
+              || `${m.provider}/${m.id}`.toLowerCase() === lower,
+          );
+        }
       } else {
         // For bare IDs, prefer the current session's provider, then first available match
         const currentProvider = ctx.model?.provider;
@@ -1695,7 +1848,8 @@ async function dispatchNextUnit(
         const fallbackNote = modelId === modelConfig.primary
           ? ""
           : ` (fallback from ${modelConfig.primary})`;
-        ctx.ui.notify(`Model: ${modelId}${fallbackNote}`, "info");
+        const phase = unitPhaseLabel(unitType);
+        ctx.ui.notify(`Model [${phase}]: ${model.provider}/${model.id}${fallbackNote}`, "info");
         modelSet = true;
         break;
       } else {
@@ -1922,7 +2076,10 @@ async function inlineDependencySummaries(
   if (!sliceEntry || sliceEntry.depends.length === 0) return "- (no dependencies)";
 
   const sections: string[] = [];
+  const seen = new Set<string>();
   for (const dep of sliceEntry.depends) {
+    if (seen.has(dep)) continue;
+    seen.add(dep);
     const summaryFile = resolveSliceFile(base, mid, dep, "SUMMARY");
     const summaryContent = summaryFile ? await loadFile(summaryFile) : null;
     const relPath = relSliceFile(base, mid, dep, "SUMMARY");
@@ -1962,6 +2119,7 @@ async function buildResearchMilestonePrompt(mid: string, midTitle: string, base:
   if (requirementsInline) inlined.push(requirementsInline);
   const decisionsInline = await inlineGsdRootFile(base, "decisions.md", "Decisions");
   if (decisionsInline) inlined.push(decisionsInline);
+  inlined.push(inlineTemplate("research", "Research"));
 
   const inlinedContext = `## Inlined Context (preloaded — do not re-read these files)\n\n${inlined.join("\n\n---\n\n")}`;
 
@@ -1994,6 +2152,11 @@ async function buildPlanMilestonePrompt(mid: string, midTitle: string, base: str
   if (requirementsInline) inlined.push(requirementsInline);
   const decisionsInline = await inlineGsdRootFile(base, "decisions.md", "Decisions");
   if (decisionsInline) inlined.push(decisionsInline);
+  inlined.push(inlineTemplate("roadmap", "Roadmap"));
+  inlined.push(inlineTemplate("decisions", "Decisions"));
+  inlined.push(inlineTemplate("plan", "Slice Plan"));
+  inlined.push(inlineTemplate("task-plan", "Task Plan"));
+  inlined.push(inlineTemplate("secrets-manifest", "Secrets Manifest"));
 
   const inlinedContext = `## Inlined Context (preloaded — do not re-read these files)\n\n${inlined.join("\n\n---\n\n")}`;
 
@@ -2030,6 +2193,7 @@ async function buildResearchSlicePrompt(
   if (decisionsInline) inlined.push(decisionsInline);
   const requirementsInline = await inlineGsdRootFile(base, "requirements.md", "Requirements");
   if (requirementsInline) inlined.push(requirementsInline);
+  inlined.push(inlineTemplate("research", "Research"));
 
   const depContent = await inlineDependencySummaries(mid, sid, base);
 
@@ -2065,6 +2229,8 @@ async function buildPlanSlicePrompt(
   if (decisionsInline) inlined.push(decisionsInline);
   const requirementsInline = await inlineGsdRootFile(base, "requirements.md", "Requirements");
   if (requirementsInline) inlined.push(requirementsInline);
+  inlined.push(inlineTemplate("plan", "Slice Plan"));
+  inlined.push(inlineTemplate("task-plan", "Task Plan"));
 
   const depContent = await inlineDependencySummaries(mid, sid, base);
 
@@ -2126,6 +2292,10 @@ async function buildExecuteTaskPrompt(
   );
 
   const carryForwardSection = await buildCarryForwardSection(priorSummaries, base);
+  const inlinedTemplates = [
+    inlineTemplate("task-summary", "Task Summary"),
+    inlineTemplate("decisions", "Decisions"),
+  ].join("\n\n---\n\n");
 
   const taskSummaryPath = `${relSlicePath(base, mid, sid)}/tasks/${tid}-SUMMARY.md`;
 
@@ -2140,6 +2310,7 @@ async function buildExecuteTaskPrompt(
     resumeSection,
     priorTaskLines: priorLines,
     taskSummaryPath,
+    inlinedTemplates,
   });
 }
 
@@ -2172,6 +2343,8 @@ async function buildCompleteSlicePrompt(
       }
     }
   }
+  inlined.push(inlineTemplate("slice-summary", "Slice Summary"));
+  inlined.push(inlineTemplate("uat", "UAT"));
 
   const inlinedContext = `## Inlined Context (preloaded — do not re-read these files)\n\n${inlined.join("\n\n---\n\n")}`;
 
@@ -2198,11 +2371,14 @@ async function buildCompleteMilestonePrompt(
   const inlined: string[] = [];
   inlined.push(await inlineFile(roadmapPath, roadmapRel, "Milestone Roadmap"));
 
-  // Inline all slice summaries
+  // Inline all slice summaries (deduplicated by slice ID)
   const roadmapContent = roadmapPath ? await loadFile(roadmapPath) : null;
   if (roadmapContent) {
     const roadmap = parseRoadmap(roadmapContent);
+    const seenSlices = new Set<string>();
     for (const slice of roadmap.slices) {
+      if (seenSlices.has(slice.id)) continue;
+      seenSlices.add(slice.id);
       const summaryPath = resolveSliceFile(base, mid, slice.id, "SUMMARY");
       const summaryRel = relSliceFile(base, mid, slice.id, "SUMMARY");
       inlined.push(await inlineFile(summaryPath, summaryRel, `${slice.id} Summary`));
@@ -2221,6 +2397,7 @@ async function buildCompleteMilestonePrompt(
   const contextRel = relMilestoneFile(base, mid, "CONTEXT");
   const contextInline = await inlineFileOptional(contextPath, contextRel, "Milestone Context");
   if (contextInline) inlined.push(contextInline);
+  inlined.push(inlineTemplate("milestone-summary", "Milestone Summary"));
 
   const inlinedContext = `## Inlined Context (preloaded — do not re-read these files)\n\n${inlined.join("\n\n---\n\n")}`;
 
@@ -2667,6 +2844,9 @@ async function collectObservabilityWarnings(
   unitType: string,
   unitId: string,
 ): Promise<import("./observability-validator.ts").ValidationIssue[]> {
+  // Hook units have custom artifacts — skip standard observability checks
+  if (unitType.startsWith("hook/")) return [];
+
   const parts = unitId.split("/");
   const mid = parts[0];
   const sid = parts[1];

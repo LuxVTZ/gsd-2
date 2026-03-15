@@ -206,6 +206,20 @@ export function writeIntegrationBranch(basePath: string, milestoneId: string, br
 
 // ─── Git Helper ────────────────────────────────────────────────────────────
 
+
+/**
+ * Strip git-svn noise from error messages.
+ * Some systems (notably Arch Linux) have a buggy git-svn Perl module that
+ * emits warnings on every git invocation, confusing users. See #404.
+ */
+function filterGitSvnNoise(message: string): string {
+  return message
+    .replace(/Duplicate specification "[^"]*" for option "[^"]*"\n?/g, "")
+    .replace(/Unable to determine upstream SVN information from .*\n?/g, "")
+    .replace(/Perhaps the repository is empty\. at .*git-svn.*\n?/g, "")
+    .trim();
+}
+
 /**
  * Run a git command in the given directory.
  * Returns trimmed stdout. Throws on non-zero exit unless allowFailure is set.

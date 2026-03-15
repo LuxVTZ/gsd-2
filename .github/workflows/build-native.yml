@@ -220,13 +220,16 @@ jobs:
             if npm install "gsd-pi@${VERSION}" 2>&1 | tee /tmp/install-output.txt; then
               echo "  ✓ Install succeeded"
               # Run version check via node directly (npx may resolve wrong binary)
-              ACTUAL=$(node node_modules/gsd-pi/dist/loader.js --version 2>&1 || echo "FAILED")
+              # Strip ANSI escape codes and match version on any line (--version prints a banner)
+              RAW=$(node node_modules/gsd-pi/dist/loader.js --version 2>&1 || echo "FAILED")
+              ACTUAL=$(echo "$RAW" | sed 's/\x1b\[[0-9;]*m//g' | grep -oE "^${VERSION}$" | head -1)
               if [ "$ACTUAL" = "$VERSION" ]; then
                 echo "  ✓ gsd --version = ${VERSION}"
                 echo "Published package is functional"
                 exit 0
               else
-                echo "::error::Version mismatch: expected ${VERSION}, got ${ACTUAL}"
+                echo "::error::Version mismatch: expected ${VERSION} in output:"
+                echo "$RAW"
                 exit 1
               fi
             fi

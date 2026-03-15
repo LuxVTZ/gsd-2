@@ -104,6 +104,12 @@ interface LayoutLine {
 	cursorPos?: number;
 }
 
+interface VisualLine {
+	logicalLine: number;
+	startCol: number;
+	length: number;
+}
+
 export interface EditorTheme {
 	borderColor: (str: string) => string;
 	selectList: SelectListTheme;
@@ -144,6 +150,12 @@ export class Editor implements Component, Focusable {
 	private autocompletePrefix: string = "";
 	private autocompleteMaxVisible: number = 5;
 
+	// Debounce for @ file autocomplete to prevent blocking the event loop
+	// with synchronous fuzzyFind calls on every keystroke
+	private autocompleteDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private lastAutocompleteLookupPrefix: string | null = null;
+	private static readonly AUTOCOMPLETE_DEBOUNCE_MS = 150;
+
 	// Paste tracking for large pastes
 	private pastes: Map<number, string> = new Map();
 	private pasteCounter: number = 0;
@@ -168,6 +180,10 @@ export class Editor implements Component, Focusable {
 
 	// Undo support
 	private undoStack = new UndoStack<EditorState>();
+	private textVersion = 0;
+	private cachedText: string | null = null;
+	private layoutCache: { width: number; textVersion: number; lines: LayoutLine[] } | null = null;
+	private visualLineMapCache: { width: number; textVersion: number; lines: VisualLine[] } | null = null;
 
 	public onSubmit?: (text: string) => void;
 	public onChange?: (text: string) => void;
@@ -209,6 +225,31 @@ export class Editor implements Component, Focusable {
 
 	setAutocompleteProvider(provider: AutocompleteProvider): void {
 		this.autocompleteProvider = provider;
+	}
+
+	private clearLayoutCaches(): void {
+		this.layoutCache = null;
+		this.visualLineMapCache = null;
+	}
+
+	private emitChange(): void {
+		this.textVersion += 1;
+		this.cachedText = null;
+		this.clearLayoutCaches();
+		if (this.onChange) {
+			this.onChange(this.getText());
+		}
+	}
+
+	private getLayoutLines(width: number): LayoutLine[] {
+		const cached = this.layoutCache;
+		if (cached && cached.width === width && cached.textVersion === this.textVersion) {
+			return cached.lines;
+		}
+
+		const lines = this.layoutText(width);
+		this.layoutCache = { width, textVersion: this.textVersion, lines };
+		return lines;
 	}
 
 	/**
@@ -273,14 +314,11 @@ export class Editor implements Component, Focusable {
 		this.setCursorCol(this.state.lines[this.state.cursorLine]?.length || 0);
 		// Reset scroll - render() will adjust to show cursor
 		this.scrollOffset = 0;
-
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	invalidate(): void {
-		// No cached state to invalidate currently
+		this.clearLayoutCaches();
 	}
 
 	render(width: number): string[] {
@@ -298,7 +336,7 @@ export class Editor implements Component, Focusable {
 		const horizontal = this.borderColor("─");
 
 		// Layout the text
-		const layoutLines = this.layoutText(layoutWidth);
+		const layoutLines = this.getLayoutLines(layoutWidth);
 
 		// Calculate max visible lines: 30% of terminal height, minimum 5 lines
 		const terminalRows = this.tui.terminal.rows;
@@ -494,7 +532,7 @@ export class Editor implements Component, Focusable {
 					this.state.cursorLine = result.cursorLine;
 					this.setCursorCol(result.cursorCol);
 					this.cancelAutocomplete();
-					if (this.onChange) this.onChange(this.getText());
+					this.emitChange();
 
 					if (shouldChainSlashArgumentAutocomplete && this.isBareCompletedSlashCommandAtCursor()) {
 						this.tryTriggerAutocomplete();
@@ -524,7 +562,7 @@ export class Editor implements Component, Focusable {
 						// Fall through to submit
 					} else {
 						this.cancelAutocomplete();
-						if (this.onChange) this.onChange(this.getText());
+						this.emitChange();
 						return;
 					}
 				}
@@ -787,7 +825,10 @@ export class Editor implements Component, Focusable {
 	}
 
 	getText(): string {
-		return this.state.lines.join("\n");
+		if (this.cachedText === null) {
+			this.cachedText = this.state.lines.join("\n");
+		}
+		return this.cachedText;
 	}
 
 	/**
@@ -877,9 +918,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol((insertedLines[insertedLines.length - 1] || "").length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	// All the editor methods from before...
@@ -906,9 +945,7 @@ export class Editor implements Component, Focusable {
 		this.state.lines[this.state.cursorLine] = before + char + after;
 		this.setCursorCol(this.state.cursorCol + char.length);
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 
 		// Check if we should trigger or update autocomplete
 		if (!this.autocompleteState) {
@@ -934,14 +971,32 @@ export class Editor implements Component, Focusable {
 				if (this.isInSlashCommandContext(textBeforeCursor)) {
 					this.tryTriggerAutocomplete();
 				}
-				// Check if we're in an @ file reference context
+				// Check if we're in an @ file reference context (debounce to avoid
+				// blocking the event loop with synchronous fuzzyFind on every keystroke)
 				else if (textBeforeCursor.match(/(?:^|[\s])@[^\s]*$/)) {
-					this.tryTriggerAutocomplete();
+					this.debouncedTriggerAutocomplete();
 				}
 			}
 		} else {
 			this.updateAutocomplete();
 		}
+	}
+
+	/**
+	 * Debounced version of tryTriggerAutocomplete for @ file reference context.
+	 * Prevents synchronous fuzzyFind calls from blocking the event loop on every keystroke.
+	 */
+	private debouncedTriggerAutocomplete(): void {
+		if (this.autocompleteDebounceTimer) {
+			clearTimeout(this.autocompleteDebounceTimer);
+			this.autocompleteDebounceTimer = null;
+		}
+
+		this.autocompleteDebounceTimer = setTimeout(() => {
+			this.autocompleteDebounceTimer = null;
+			this.tryTriggerAutocomplete();
+			this.tui.requestRender();
+		}, Editor.AUTOCOMPLETE_DEBOUNCE_MS);
 	}
 
 	private handlePaste(pastedText: string): void {
@@ -1021,9 +1076,7 @@ export class Editor implements Component, Focusable {
 		this.state.cursorLine++;
 		this.setCursorCol(0);
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private shouldSubmitOnBackslashEnter(data: string, kb: ReturnType<typeof getEditorKeybindings>): boolean {
@@ -1052,7 +1105,7 @@ export class Editor implements Component, Focusable {
 		this.undoStack.clear();
 		this.lastAction = null;
 
-		if (this.onChange) this.onChange("");
+		this.emitChange();
 		if (this.onSubmit) this.onSubmit(result);
 	}
 
@@ -1091,9 +1144,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(previousLine.length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 
 		// Update or re-trigger autocomplete after backspace
 		if (this.autocompleteState) {
@@ -1106,9 +1157,9 @@ export class Editor implements Component, Focusable {
 			if (this.isInSlashCommandContext(textBeforeCursor)) {
 				this.tryTriggerAutocomplete();
 			}
-			// @ file reference context
+			// @ file reference context (debounced to avoid blocking event loop)
 			else if (textBeforeCursor.match(/(?:^|[\s])@[^\s]*$/)) {
-				this.tryTriggerAutocomplete();
+				this.debouncedTriggerAutocomplete();
 			}
 		}
 	}
@@ -1256,9 +1307,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(previousLine.length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private deleteToEndOfLine(): void {
@@ -1288,9 +1337,7 @@ export class Editor implements Component, Focusable {
 			this.state.lines.splice(this.state.cursorLine + 1, 1);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private deleteWordBackwards(): void {
@@ -1333,9 +1380,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(deleteFrom);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private deleteWordForward(): void {
@@ -1375,9 +1420,7 @@ export class Editor implements Component, Focusable {
 				currentLine.slice(0, this.state.cursorCol) + currentLine.slice(deleteTo);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private handleForwardDelete(): void {
@@ -1409,9 +1452,7 @@ export class Editor implements Component, Focusable {
 			this.state.lines.splice(this.state.cursorLine + 1, 1);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 
 		// Update or re-trigger autocomplete after forward delete
 		if (this.autocompleteState) {
@@ -1423,9 +1464,9 @@ export class Editor implements Component, Focusable {
 			if (this.isInSlashCommandContext(textBeforeCursor)) {
 				this.tryTriggerAutocomplete();
 			}
-			// @ file reference context
+			// @ file reference context (debounced to avoid blocking event loop)
 			else if (textBeforeCursor.match(/(?:^|[\s])@[^\s]*$/)) {
-				this.tryTriggerAutocomplete();
+				this.debouncedTriggerAutocomplete();
 			}
 		}
 	}
@@ -1437,8 +1478,13 @@ export class Editor implements Component, Focusable {
 	 * - startCol: starting column in the logical line
 	 * - length: length of this visual line segment
 	 */
-	private buildVisualLineMap(width: number): Array<{ logicalLine: number; startCol: number; length: number }> {
-		const visualLines: Array<{ logicalLine: number; startCol: number; length: number }> = [];
+	private buildVisualLineMap(width: number): VisualLine[] {
+		const cached = this.visualLineMapCache;
+		if (cached && cached.width === width && cached.textVersion === this.textVersion) {
+			return cached.lines;
+		}
+
+		const visualLines: VisualLine[] = [];
 
 		for (let i = 0; i < this.state.lines.length; i++) {
 			const line = this.state.lines[i] || "";
@@ -1461,6 +1507,11 @@ export class Editor implements Component, Focusable {
 			}
 		}
 
+		this.visualLineMapCache = {
+			width,
+			textVersion: this.textVersion,
+			lines: visualLines,
+		};
 		return visualLines;
 	}
 
@@ -1674,9 +1725,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol((lines[lines.length - 1] || "").length);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	/**
@@ -1716,9 +1765,7 @@ export class Editor implements Component, Focusable {
 			this.setCursorCol(startCol);
 		}
 
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	private pushUndoSnapshot(): void {
@@ -1732,9 +1779,7 @@ export class Editor implements Component, Focusable {
 		Object.assign(this.state, snapshot);
 		this.lastAction = null;
 		this.preferredVisualCol = null;
-		if (this.onChange) {
-			this.onChange(this.getText());
-		}
+		this.emitChange();
 	}
 
 	/**
@@ -1976,7 +2021,7 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 				this.state.lines = result.lines;
 				this.state.cursorLine = result.cursorLine;
 				this.setCursorCol(result.cursorCol);
-				if (this.onChange) this.onChange(this.getText());
+				this.emitChange();
 				return;
 			}
 
@@ -1999,6 +2044,15 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 		this.autocompleteState = null;
 		this.autocompleteList = undefined;
 		this.autocompletePrefix = "";
+		this.clearAutocompleteDebounce();
+	}
+
+	private clearAutocompleteDebounce(): void {
+		if (this.autocompleteDebounceTimer) {
+			clearTimeout(this.autocompleteDebounceTimer);
+			this.autocompleteDebounceTimer = null;
+		}
+		this.lastAutocompleteLookupPrefix = null;
 	}
 
 	public isShowingAutocomplete(): boolean {
@@ -2012,6 +2066,38 @@ https://github.com/EsotericSoftware/spine-runtimes/actions/runs/19536643416/job/
 			this.forceFileAutocomplete();
 			return;
 		}
+
+		// Check if we're in an @ file reference context — these trigger expensive
+		// synchronous fuzzyFind calls that block the event loop. Debounce them so
+		// rapid typing doesn't cascade into dozens of blocking searches.
+		const currentLine = this.state.lines[this.state.cursorLine] || "";
+		const textBeforeCursor = currentLine.slice(0, this.state.cursorCol);
+		if (this.autocompletePrefix.startsWith("@") || textBeforeCursor.match(/(?:^|[\s])@[^\s]*$/)) {
+			this.debouncedUpdateAutocompleteSuggestions();
+			return;
+		}
+
+		this.applyAutocompleteSuggestions();
+	}
+
+	private debouncedUpdateAutocompleteSuggestions(): void {
+		// Clear any pending debounce
+		if (this.autocompleteDebounceTimer) {
+			clearTimeout(this.autocompleteDebounceTimer);
+			this.autocompleteDebounceTimer = null;
+		}
+
+		this.autocompleteDebounceTimer = setTimeout(() => {
+			this.autocompleteDebounceTimer = null;
+			// Guard: autocomplete may have been cancelled during debounce wait
+			if (!this.autocompleteState || !this.autocompleteProvider) return;
+			this.applyAutocompleteSuggestions();
+			this.tui.requestRender();
+		}, Editor.AUTOCOMPLETE_DEBOUNCE_MS);
+	}
+
+	private applyAutocompleteSuggestions(): void {
+		if (!this.autocompleteProvider) return;
 
 		const suggestions = this.autocompleteProvider.getSuggestions(
 			this.state.lines,

@@ -67,9 +67,9 @@ import {
 	type TurnEndEvent,
 	type TurnStartEvent,
 	wrapRegisteredTools,
-	wrapToolsWithExtensions,
 } from "./extensions/index.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
+import { FallbackResolver } from "./fallback-resolver.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.js";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.js";
@@ -120,7 +120,10 @@ export type AgentSessionEvent =
 			errorMessage?: string;
 	  }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
+	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "fallback_provider_switch"; from: string; to: string; reason: string }
+	| { type: "fallback_provider_restored"; provider: string; reason: string }
+	| { type: "fallback_chain_exhausted"; reason: string };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -267,6 +270,9 @@ export class AgentSession {
 	// Model registry for API key resolution
 	private _modelRegistry: ModelRegistry;
 
+	// Provider fallback resolver
+	private _fallbackResolver: FallbackResolver;
+
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
@@ -284,6 +290,11 @@ export class AgentSession {
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;
 		this._modelRegistry = config.modelRegistry;
+		this._fallbackResolver = new FallbackResolver(
+			this.settingsManager,
+			this._modelRegistry.authStorage,
+			this._modelRegistry,
+		);
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._baseToolsOverride = config.baseToolsOverride;
@@ -291,6 +302,11 @@ export class AgentSession {
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
 		this._unsubscribeAgent = this.agent.subscribe(this._handleAgentEvent);
+
+		// Install tool hooks that await the event queue before emitting extension events.
+		// This ensures extensions always see settled state (e.g., assistant message appended)
+		// even when tools execute in parallel.
+		this._installAgentToolHooks();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -301,6 +317,11 @@ export class AgentSession {
 	/** Model registry for API key resolution and model discovery */
 	get modelRegistry(): ModelRegistry {
 		return this._modelRegistry;
+	}
+
+	/** Fallback resolver for cross-provider fallback */
+	get fallbackResolver(): FallbackResolver {
+		return this._fallbackResolver;
 	}
 
 	// =========================================================================
@@ -458,6 +479,73 @@ export class AgentSession {
 			this._retryResolve = undefined;
 			this._retryPromise = undefined;
 		}
+	}
+
+	/**
+	 * Install beforeToolCall/afterToolCall hooks on the Agent.
+	 *
+	 * These hooks await `_agentEventQueue` before emitting extension events,
+	 * ensuring that all prior events (including `message_end` which appends
+	 * the assistant message) have fully settled. This prevents a race condition
+	 * in parallel tool execution where extension `tool_call` handlers could
+	 * see stale agent state.
+	 */
+	private _installAgentToolHooks(): void {
+		this.agent.setBeforeToolCall(async ({ toolCall, args }) => {
+			// Wait for all queued agent events to settle before emitting to extensions
+			await this._agentEventQueue;
+
+			if (!this._extensionRunner?.hasHandlers("tool_call")) return undefined;
+
+			try {
+				const callResult = await this._extensionRunner.emitToolCall({
+					type: "tool_call",
+					toolName: toolCall.name,
+					toolCallId: toolCall.id,
+					input: args as Record<string, unknown>,
+				});
+
+				if (callResult?.block) {
+					return {
+						block: true,
+						reason: callResult.reason || "Tool execution was blocked by an extension",
+					};
+				}
+			} catch (err) {
+				if (err instanceof Error) {
+					return { block: true, reason: err.message };
+				}
+				return { block: true, reason: `Extension failed, blocking execution: ${String(err)}` };
+			}
+
+			return undefined;
+		});
+
+		this.agent.setAfterToolCall(async ({ toolCall, args, result, isError }) => {
+			// Wait for all queued agent events to settle
+			await this._agentEventQueue;
+
+			if (!this._extensionRunner?.hasHandlers("tool_result")) return undefined;
+
+			const resultResult = await this._extensionRunner.emitToolResult({
+				type: "tool_result",
+				toolName: toolCall.name,
+				toolCallId: toolCall.id,
+				input: args as Record<string, unknown>,
+				content: result.content,
+				details: result.details,
+				isError,
+			});
+
+			if (resultResult) {
+				return {
+					content: resultResult.content ?? undefined,
+					details: resultResult.details ?? undefined,
+				};
+			}
+
+			return undefined;
+		});
 	}
 
 	/** Extract text content from a message */
@@ -866,6 +954,19 @@ export class AgentSession {
 					`Use /login or set an API key environment variable. See ${join(getDocsPath(), "providers.md")}\n\n` +
 					"Then use /model to select a model.",
 			);
+		}
+
+		// Check if a higher-priority provider in the fallback chain has recovered
+		const restoration = await this._fallbackResolver.checkForRestoration(this.model);
+		if (restoration) {
+			const previousProvider = `${this.model.provider}/${this.model.id}`;
+			this.agent.setModel(restoration.model);
+			this.sessionManager.appendModelChange(restoration.model.provider, restoration.model.id);
+			this._emit({
+				type: "fallback_provider_restored",
+				provider: `${restoration.model.provider}/${restoration.model.id}`,
+				reason: `Restored from ${previousProvider}`,
+			});
 		}
 
 		// Validate API key
@@ -2151,12 +2252,10 @@ export class AgentSession {
 			toolRegistry.set(tool.name, tool);
 		}
 
-		if (this._extensionRunner) {
-			const wrappedAllTools = wrapToolsWithExtensions(Array.from(toolRegistry.values()), this._extensionRunner);
-			this._toolRegistry = new Map(wrappedAllTools.map((tool) => [tool.name, tool]));
-		} else {
-			this._toolRegistry = toolRegistry;
-		}
+		// Tool interception (tool_call/tool_result extension events) is handled by
+		// beforeToolCall/afterToolCall hooks installed in _installAgentToolHooks(),
+		// which await _agentEventQueue for safe parallel execution.
+		this._toolRegistry = toolRegistry;
 
 		const nextActiveToolNames = options?.activeToolNames
 			? [...options.activeToolNames]
@@ -2354,20 +2453,66 @@ export class AgentSession {
 				return true;
 			}
 
-			// All credentials are backed off. For quota-exhausted errors the backoff is very
-			// long (30+ min), so retrying immediately is futile and will only produce
-			// confusing secondary errors (e.g. "Authentication failed"). Give up now and
-			// surface the original quota error to the user.
-			if (errorType === "quota_exhausted") {
-				this._emit({
-					type: "auto_retry_end",
-					success: false,
-					attempt: this._retryAttempt,
-					finalError: message.errorMessage,
-				});
-				this._retryAttempt = 0;
-				this._resolveRetry();
-				return false;
+			// All credentials are backed off. Try cross-provider fallback before giving up.
+			if (isCredentialError) {
+				const fallbackResult = await this._fallbackResolver.findFallback(
+					this.model,
+					errorType,
+				);
+
+				if (fallbackResult) {
+					// Swap to fallback model — don't persist to settings
+					const previousProvider = this.model.provider;
+					this.agent.setModel(fallbackResult.model);
+					this.sessionManager.appendModelChange(fallbackResult.model.provider, fallbackResult.model.id);
+
+					// Remove error message from agent state
+					const msgs = this.agent.state.messages;
+					if (msgs.length > 0 && msgs[msgs.length - 1].role === "assistant") {
+						this.agent.replaceMessages(msgs.slice(0, -1));
+					}
+
+					this._emit({
+						type: "fallback_provider_switch",
+						from: `${previousProvider}/${this.model?.id}`,
+						to: `${fallbackResult.model.provider}/${fallbackResult.model.id}`,
+						reason: fallbackResult.reason,
+					});
+
+					this._emit({
+						type: "auto_retry_start",
+						attempt: this._retryAttempt + 1,
+						maxAttempts: settings.maxRetries,
+						delayMs: 0,
+						errorMessage: `${message.errorMessage} (${fallbackResult.reason})`,
+					});
+
+					// Retry immediately with fallback provider - don't increment _retryAttempt
+					setTimeout(() => {
+						this.agent.continue().catch(() => {
+							// Retry failed - will be caught by next agent_end
+						});
+					}, 0);
+
+					return true;
+				}
+
+				// No fallback available either
+				if (errorType === "quota_exhausted") {
+					this._emit({
+						type: "fallback_chain_exhausted",
+						reason: `All providers exhausted for ${this.model.provider}/${this.model.id}`,
+					});
+					this._emit({
+						type: "auto_retry_end",
+						success: false,
+						attempt: this._retryAttempt,
+						finalError: message.errorMessage,
+					});
+					this._retryAttempt = 0;
+					this._resolveRetry();
+					return false;
+				}
 			}
 		}
 
